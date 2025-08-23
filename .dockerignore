@@ -1,0 +1,57 @@
+# Rust build artifacts
+target/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile*
+.dockerignore
+docker-compose*.yml
+
+# Documentation
+README.md
+*.md
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Build scripts
+scripts/build-all.sh
+scripts/mkimage-pop.sh
+scripts/mkdiskimage-pop.sh
+
+# Keys (security)
+keys/
+*.key
+*.pem
+*.p12
+
+# Alpine build artifacts
+alpine-build/
+artifacts/
+profiles/
+
+# Test files
+*_test.rs

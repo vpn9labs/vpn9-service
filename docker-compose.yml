@@ -1,0 +1,54 @@
+services:
+  vpn9-control-plane:
+    build:
+      context: .
+      dockerfile: Dockerfile.control-plane
+    ports:
+      - "50051:50051"
+    user: "${USERID:-1000}:${GROUPID:-1000}"
+    environment:
+      - VPN9_TLS_CERT_PATH=/opt/vpn9/certs/server.crt
+      - VPN9_TLS_KEY_PATH=/opt/vpn9/certs/server.key
+      - VPN9_TLS_DOMAIN=vpn9-control-plane
+      - VPN9_BIND_ADDRESS=0.0.0.0:50051
+      - VPN9_CONTROL_PLANE_VERSION=1.0.0
+      - VPN9_UPDATE_PATH=/opt/vpn9/updates
+      - RUST_LOG=info
+    volumes:
+      - ./certs:/opt/vpn9/certs:ro
+      - ./updates:/opt/vpn9/updates:rw
+    networks:
+      - vpn9-network
+    healthcheck:
+      test: ["CMD", "pidof", "vpn9-control-plane"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Example agent service (for testing)
+  vpn9-agent-example:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent  # You would create this for agent
+    environment:
+      - VPN9_TLS_CA_CERT_PATH=/opt/vpn9/certs/ca.crt
+      - VPN9_TLS_DOMAIN=vpn9-control-plane
+      - VPN9_CONTROL_PLANE_URL=https://vpn9-control-plane:50051
+    volumes:
+      - ./certs:/opt/vpn9/certs:ro
+    networks:
+      - vpn9-network
+    depends_on:
+      vpn9-control-plane:
+        condition: service_healthy
+    profiles:
+      - testing  # Only start with --profile testing
+
+networks:
+  vpn9-network:
+    driver: bridge
+
+volumes:
+  certs:
+  updates:

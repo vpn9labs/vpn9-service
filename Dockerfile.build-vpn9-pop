@@ -1,0 +1,36 @@
+# Dockerfile.build-vpn9-pop
+# Stage 1: Build vpn9-agent
+FROM rust:1.88-alpine AS rust-builder
+
+RUN apk add --no-cache musl-dev protobuf-dev openssl-dev openssl-libs-static pkgconfig
+
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY vpn9-agent ./vpn9-agent
+COPY vpn9-core ./vpn9-core
+COPY vpn9-control-plane ./vpn9-control-plane
+
+# Build vpn9-agent for Alpine (musl target) with full static linking
+RUN rustup target add x86_64-unknown-linux-musl
+ENV RUSTFLAGS="-C target-feature=+crt-static"
+RUN cargo build --release --target x86_64-unknown-linux-musl --bin vpn9-agent
+
+# Stage 2: ISO builder with vpn9-agent binary
+FROM alpine:3.22
+
+RUN apk add --no-cache alpine-sdk alpine-conf mkinitfs \
+            squashfs-tools xorriso syslinux \
+            grub grub-efi doas \
+            wireguard-tools iptables
+
+# Download and extract aports (static, cacheable step)
+RUN mkdir -p /root/aports && \
+    wget -qO- https://gitlab.alpinelinux.org/alpine/aports/-/archive/3.22-stable/aports-3.22-stable.tar.gz | \
+    tar xz -C /root/aports --strip=1
+
+# Copy vpn9-agent binary from build stage
+COPY --from=rust-builder /src/target/x86_64-unknown-linux-musl/release/vpn9-agent /usr/local/bin/vpn9-agent
+
+# Copy profile and overlays in later
+WORKDIR /build
+ENTRYPOINT ["/bin/sh"]

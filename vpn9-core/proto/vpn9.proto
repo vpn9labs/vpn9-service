@@ -1,0 +1,109 @@
+// ------------------------------------------------------------
+// VPN9 Protocol
+// ------------------------------------------------------------
+
+// This file contains the protocol definitions for the VPN9 system.
+// It is used to define the messages that are sent between the
+// control plane and the agents. Agents are responsible for
+// the Wireguard VPN service.
+
+syntax = "proto3";
+package VPN9;
+
+// ------------------------------------------------------------
+// Control Plane
+// ------------------------------------------------------------
+
+// Control Plane is the central hub for managing agents that
+// run on Point of Presence (PoP) servers.
+
+service ControlPlane {
+  rpc SubscribeAgent(AgentSubscriptionRequest) returns (stream AgentSubscriptionMessage) {}
+  rpc CheckForUpdate(UpdateCheckRequest) returns (UpdateCheckResponse) {}
+  rpc DownloadUpdate(DownloadUpdateRequest) returns (stream UpdateChunk) {}
+}
+
+// ------------------------------------------------------------
+// Agent Registration
+// ------------------------------------------------------------
+
+message AgentRegistration {
+  string status = 1;
+  string wg_public_key = 2;
+  uint32 wg_listen_port = 4;
+}
+
+// ------------------------------------------------------------
+// Agent Subscription
+// ------------------------------------------------------------
+
+message AgentSubscriptionRequest {
+  string agent_id = 1;
+  string hostname = 2;
+  string os_version = 3;
+  string kernel_version = 4;
+  string public_ip = 5;
+  int32 cpu_count = 6;
+  int32 total_memory_mb = 7;
+  string wg_public_key = 8; // Agent-generated public key
+}
+
+message PeerRegistrationRequest {
+  string agent_id = 1;
+  string public_key = 2;
+}
+
+message HealthCheck {
+  string agent_id = 1;
+  int64 timestamp = 2;
+}
+
+message HealthResponse {
+  string agent_id = 1;
+  int64 timestamp = 2;
+  string status = 3;
+}
+
+message AgentDisconnect {
+  string agent_id = 1;
+  string reason = 2;
+}
+
+message AgentSubscriptionMessage {
+  string agent_id = 1;
+  oneof message {
+    AgentRegistration agent_registration = 2;
+    PeerRegistrationRequest peer_registration_request = 3;
+    HealthCheck health_check = 4;
+    HealthResponse health_response = 5;
+    AgentDisconnect agent_disconnect = 6;
+  }
+}
+
+// ------------------------------------------------------------
+// Update Service
+// ------------------------------------------------------------
+
+message UpdateCheckRequest {
+  string current_version = 1;
+  string agent_id = 2;
+}
+
+message UpdateCheckResponse {
+  bool update_available = 1;
+  string latest_version = 2;
+  string download_url = 3;
+  string checksum = 4;
+  int64 file_size = 5;
+}
+
+message DownloadUpdateRequest {
+  string version = 1;
+  string agent_id = 2;
+}
+
+message UpdateChunk {
+  bytes data = 1;
+  int64 offset = 2;
+  bool is_final = 3;
+}

@@ -1,0 +1,4 @@
+[workspace]
+resolver = "3"
+members = ["vpn9-agent", "vpn9-control-plane", "vpn9-core"]
+
