@@ -5,19 +5,21 @@ VPN9 is a high-performance, secure VPN infrastructure built in Rust, featuring a
 ## 🏗️ Architecture
 
 ### Control Plane
-The control plane is a modular gRPC-based service that manages:
-- **Agent Registration**: WireGuard key management and agent lifecycle
-- **Update Distribution**: Secure update delivery with SHA256 verification
-- **TLS Communication**: Certificate-based secure communication
-- **Configuration Management**: Environment-based configuration
+The control plane exposes two interfaces and manages VPN state:
+- **gRPC (TLS)**: agent subscription, update checks, and streaming updates
+- **REST (8080)**: JWT-authenticated peer registration for WireGuard
+- **WireGuard**: interface setup and peer lifecycle
+- **Config via env**: sane defaults with runtime validation
 
 **Key Components:**
-- `config.rs` - Configuration management and environment variables
-- `agent_manager.rs` - Agent subscription and WireGuard key handling
-- `update_manager.rs` - Update distribution with checksums and streaming
-- `service.rs` - Main gRPC service implementing the ControlPlane interface
-- `server.rs` - TLS server setup with builder pattern
-- `lib.rs` - Module organization, key management, and public API
+- `config.rs` - Env-driven configuration and validation
+- `service.rs` - gRPC `ControlPlane` implementation
+- `agent_manager.rs` - Agent subscription and lifecycle
+- `update_manager.rs` - Update checks, chunked downloads, SHA256 verification
+- `server.rs` - TLS gRPC server + builder
+- `rest_server.rs` - JWT-verified `POST /register` endpoint
+- `wireguard_manager.rs` - WireGuard interface and peer management
+- `lib.rs` - Public API and in-memory key/agent registry
 
 ### VPN9 Agent
 Lightweight agent that runs on POP servers and client endpoints, handling:
@@ -25,6 +27,13 @@ Lightweight agent that runs on POP servers and client endpoints, handling:
 - WireGuard tunnel management
 - System integration
 - Automatic updates
+
+Example REST registration (requires a valid JWT signed by the configured public key; if using docker-compose, expose `8080:8080` first):
+```bash
+curl -X POST http://localhost:8080/register \
+  -H 'Content-Type: application/json' \
+  -d '{"pubkey":"<base64-public-key>","token":"<jwt>"}'
+```
 
 ### VPN9 Core
 Shared protocol definitions and common utilities used across all components.
@@ -141,12 +150,18 @@ Complete Pipeline:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `VPN9_BIND_ADDRESS` | Server bind address | `0.0.0.0:50051` |
-| `VPN9_CURRENT_VERSION` | Current software version | `1.0.0` |
-| `VPN9_UPDATE_PATH` | Path to update files | `./updates/` |
-| `VPN9_TLS_CERT_PATH` | TLS certificate path | `./certs/server.crt` |
-| `VPN9_TLS_KEY_PATH` | TLS private key path | `./certs/server.key` |
-| `VPN9_TLS_DOMAIN` | TLS domain name | `vpn9-control-plane` |
+| `VPN9_BIND_ADDRESS` | gRPC bind address | `0.0.0.0:50051` |
+| `VPN9_CONTROL_PLANE_VERSION` | Reported version string | `1.0.0` |
+| `VPN9_UPDATE_PATH` | Directory for update artifacts | `./updates/` |
+| `VPN9_TLS_CERT_PATH` | TLS certificate (PEM) | `./certs/server.crt` |
+| `VPN9_TLS_KEY_PATH` | TLS private key (PEM) | `./certs/server.key` |
+| `VPN9_TLS_DOMAIN` | Expected SNI/server name | `vpn9-control-plane` |
+| `VPN9_REST_BIND_ADDRESS` | REST bind address | `0.0.0.0:8080` |
+| `VPN9_JWT_PUBLIC_KEY_PATH` | JWT RSA public key (PEM) | `./certs/jwt_public.pem` |
+| `VPN9_WIREGUARD_INTERFACE` | WireGuard interface name | `wg0` |
+| `VPN9_WIREGUARD_PRIVATE_KEY` | Base64 private key (optional) | generated/empty |
+| `VPN9_WIREGUARD_LISTEN_PORT` | WireGuard UDP port | `51820` |
+| `VPN9_WIREGUARD_INTERFACE_ADDRESS` | CIDR for interface | `10.0.0.1/24` |
 
 ### Certificate Configuration
 
@@ -167,9 +182,11 @@ vpn9-rs/
 │   │   ├── lib.rs          # Module organization & key management
 │   │   ├── main.rs         # Application entry point
 │   │   ├── config.rs       # Configuration management
-│   │   ├── service.rs      # Main gRPC service
+│   │   ├── service.rs      # gRPC service (ControlPlane)
 │   │   ├── agent_manager.rs # Agent subscription handling
 │   │   ├── update_manager.rs # Update distribution
+│   │   ├── wireguard_manager.rs # WireGuard interface/peers
+│   │   ├── rest_server.rs  # JWT-auth REST /register
 │   │   └── server.rs       # TLS server setup
 │   └── Dockerfile
 ├── vpn9-agent/            # VPN agent for POP servers
@@ -197,19 +214,23 @@ cargo check --workspace
 ### Testing TLS Connection
 
 ```bash
-# Test with grpcurl (install: go install github.com/fullstorydev/grpcurl/cmd/grpcurl@latest)
-grpcurl -insecure -d '{"agent_id":"test","current_version":"1.0.0"}' \
-  localhost:50051 \
-  vpn9.control_plane.ControlPlane/CheckForUpdate
+# Using grpcurl with the dev CA and correct service path
+grpcurl -cacert certs/ca.crt -authority vpn9-control-plane \
+  -d '{"agent_id":"test","current_version":"1.0.0"}' \
+  localhost:50051 VPN9.ControlPlane/CheckForUpdate
+
+# Alternatively (dev only), skip verification
+# grpcurl -insecure -d '{"agent_id":"test","current_version":"1.0.0"}' \
+#   localhost:50051 VPN9.ControlPlane/CheckForUpdate
 ```
 
 ## 🛡️ Security
 
-- **TLS 1.3**: All communication encrypted with modern TLS
-- **Certificate Verification**: Mutual TLS authentication
-- **SHA256 Checksums**: Update integrity verification
-- **WireGuard**: Industry-standard VPN protocol
-- **Rust Memory Safety**: Memory-safe implementation
+- **TLS 1.3**: gRPC secured with server-side TLS (self-signed CA in dev)
+- **JWT validation**: REST `/register` verifies RS256/384/512-signed tokens
+- **SHA256 checksums**: Update integrity verification
+- **WireGuard**: Interface + peers managed by control plane
+- **Rust memory safety**: `rustls`, `tonic`, `tokio` throughout
 
 ## 📝 Logging
 
@@ -234,7 +255,10 @@ export RUST_LOG="vpn9_control_plane=info,tonic=warn"
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0-only).
+
+- See `LICENSE` for the full text.
+- Copyleft applies to network use: if you modify VPN9 and provide it as a service, you must publish your changes under the same license.
 
 ## 🆘 Troubleshooting
 
