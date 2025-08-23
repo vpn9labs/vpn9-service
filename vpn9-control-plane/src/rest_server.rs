@@ -1,16 +1,10 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::post,
-    Json, Router,
-};
-use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
+use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::post};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use serde::{Deserialize, Serialize};
 use std::{fs, net::SocketAddr, sync::Arc};
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 #[derive(Debug, Clone)]
 pub struct RestServerConfig {
@@ -137,6 +131,12 @@ async fn register_handler(
     };
 
     info!("Valid token for subject: {}", token_data.claims.sub);
+    // Read timestamps to avoid unused-field warnings and aid debugging
+    debug!(
+        iat = token_data.claims.iat,
+        exp = token_data.claims.exp,
+        "Token timestamps"
+    );
 
     let wg_manager = state.wireguard_manager.write().await;
     match wg_manager.add_peer(&payload.pubkey).await {

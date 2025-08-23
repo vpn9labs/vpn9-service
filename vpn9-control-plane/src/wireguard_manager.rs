@@ -54,12 +54,15 @@ impl WireGuardManager {
         Ok((private_key, public_key))
     }
 
-    pub async fn configure(&self, config: WireGuardConfig) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn configure(
+        &self,
+        config: WireGuardConfig,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         *self.config.lock().await = Some(config.clone());
 
         #[cfg(not(target_os = "macos"))]
         let wg_api = WGApi::<Kernel>::new(config.interface_name.clone())?;
-        
+
         #[cfg(target_os = "macos")]
         let wg_api = WGApi::<Userspace>::new(config.interface_name.clone())?;
 
@@ -73,7 +76,7 @@ impl WireGuardManager {
         };
 
         wg_api.configure_interface(&interface_config)?;
-        
+
         *self.wg_api.lock().await = Some(wg_api);
         *self.interface_configured.lock().await = true;
 
@@ -92,7 +95,7 @@ impl WireGuardManager {
         *next_ip += 1;
 
         let peer_key = Key::from_str(peer_public_key)?;
-        
+
         let peer = Peer {
             public_key: peer_key,
             preshared_key: None,
@@ -106,12 +109,18 @@ impl WireGuardManager {
         };
 
         wg_api.configure_peer(&peer)?;
-        
-        info!("Added WireGuard peer with public key: {} and IP: {}", peer_public_key, peer_ip);
+
+        info!(
+            "Added WireGuard peer with public key: {} and IP: {}",
+            peer_public_key, peer_ip
+        );
         Ok(())
     }
 
-    pub async fn remove_peer(&self, peer_public_key: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn remove_peer(
+        &self,
+        peer_public_key: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let wg_api_lock = self.wg_api.lock().await;
         let wg_api = wg_api_lock
             .as_ref()
@@ -119,8 +128,11 @@ impl WireGuardManager {
 
         let peer_key = Key::from_str(peer_public_key)?;
         wg_api.remove_peer(&peer_key)?;
-        
-        info!("Removed WireGuard peer with public key: {}", peer_public_key);
+
+        info!(
+            "Removed WireGuard peer with public key: {}",
+            peer_public_key
+        );
         Ok(())
     }
 

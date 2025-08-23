@@ -63,8 +63,8 @@ impl Config {
         let jwt_public_key_path = std::env::var("VPN9_JWT_PUBLIC_KEY_PATH")
             .unwrap_or_else(|_| "./certs/jwt_public.pem".to_string());
 
-        let wireguard_interface = std::env::var("VPN9_WIREGUARD_INTERFACE")
-            .unwrap_or_else(|_| "wg0".to_string());
+        let wireguard_interface =
+            std::env::var("VPN9_WIREGUARD_INTERFACE").unwrap_or_else(|_| "wg0".to_string());
 
         let wireguard_private_key = std::env::var("VPN9_WIREGUARD_PRIVATE_KEY")
             .ok()
@@ -130,7 +130,10 @@ impl Config {
 
         // Check if JWT public key file exists
         if !std::path::Path::new(&self.jwt_public_key_path).exists() {
-            warn!("JWT public key file not found: {}, REST API authentication will not work", self.jwt_public_key_path);
+            warn!(
+                "JWT public key file not found: {}, REST API authentication will not work",
+                self.jwt_public_key_path
+            );
         }
 
         // Create update directory if it doesn't exist

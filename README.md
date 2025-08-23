@@ -89,7 +89,7 @@ Shared protocol definitions and common utilities used across all components.
 VPN9 Control Plane Makefile
 
 Docker Tasks:
-  login-gitea         - Login to Gitea Docker registry
+  login-ghcr          - Login to GitHub Container Registry
   build-control-plane - Build control plane Docker image for x86_64
   push-control-plane  - Build and push control plane image
   deploy-control-plane- Push image and display completion message

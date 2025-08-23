@@ -1,6 +1,6 @@
 # VPN9 Control Plane Docker Build and Push
 
-REGISTRY := g1t34.bananapancakes.co
+REGISTRY := ghcr.io
 IMAGE_NAME := technicalotter/vpn9-control-plane
 TAG := latest
 
@@ -20,7 +20,7 @@ CERT_DOMAIN := vpn9-control-plane
 CERT_DAYS := 365
 CERT_KEY_SIZE := 2048
 
-.PHONY: login-gitea build-control-plane push-control-plane deploy-control-plane
+.PHONY: login-ghcr build-control-plane push-control-plane deploy-control-plane
 .PHONY: ansible-check ansible-deps ansible-setup ansible-deploy ansible-docker-setup
 .PHONY: ansible-ping ansible-facts ansible-clean full-deploy help
 .PHONY: dev-build dev-up dev-down dev-logs dev-status dev-clean dev-restart
@@ -28,7 +28,7 @@ CERT_KEY_SIZE := 2048
 .PHONY: certs-generate certs-clean certs-verify certs-info certs-install
 .PHONY: dev-env tls-test
 
-login-gitea:
+login-ghcr:
 	docker login $(REGISTRY)
 
 build-control-plane:
@@ -229,7 +229,7 @@ help:
 	@echo "VPN9 Makefile"
 	@echo ""
 	@echo "Docker Tasks:"
-	@echo "  login-gitea         - Login to Gitea Docker registry"
+	@echo "  login-ghcr          - Login to GitHub Container Registry"
 	@echo "  build-control-plane - Build control plane Docker image for x86_64"
 	@echo "  push-control-plane  - Build and push control plane image"
 	@echo "  deploy-control-plane- Push image and display completion message"
