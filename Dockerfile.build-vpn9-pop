@@ -1,6 +1,6 @@
 # Dockerfile.build-vpn9-pop
 # Stage 1: Build vpn9-agent
-FROM rust:1.88-alpine AS rust-builder
+FROM rust:1.89-alpine AS rust-builder
 
 RUN apk add --no-cache musl-dev protobuf-dev openssl-dev openssl-libs-static pkgconfig
 

@@ -1,6 +1,6 @@
 # Multi-stage build for VPN9 Control Plane
 # Stage 1: Build the application
-FROM rust:1.88-slim AS builder
+FROM rust:1.89-slim AS builder
 
 # Install required system dependencies
 RUN apt-get update && apt-get install -y \

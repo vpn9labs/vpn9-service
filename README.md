@@ -32,7 +32,7 @@ Shared protocol definitions and common utilities used across all components.
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Rust 1.70+ with Cargo
+- Rust 1.89+ with Cargo
 - Docker and Docker Compose
 - Make
 - Ansible (for deployment)
