@@ -37,11 +37,7 @@ pub async fn collect_os_info() -> OsInfo {
         .into_iter()
         .map(|(name, data)| NetInterface {
             name: name.to_string(),
-            ip_addresses: data
-                .ip_networks()
-                .iter()
-                .filter_map(|addr| Some(addr.addr))
-                .collect(),
+            ip_addresses: data.ip_networks().iter().map(|addr| addr.addr).collect(),
         })
         .collect();
 
@@ -81,7 +77,7 @@ fn get_os_version_from_system() -> String {
                 }
 
                 // Fallback to generic Linux identification
-                format!("Linux {}", release)
+                format!("Linux {release}")
             } else {
                 "Linux Unknown".to_string()
             }
@@ -126,16 +122,14 @@ async fn get_public_ip() -> Option<IpAddr> {
         "https://checkip.amazonaws.com",
     ];
 
-    for endpoint in endpoints.iter() {
-        if let Ok(response) =
-            tokio::time::timeout(std::time::Duration::from_secs(5), reqwest::get(*endpoint)).await
+    for endpoint in endpoints {
+        if let Ok(Ok(response)) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), reqwest::get(endpoint)).await
         {
-            if let Ok(response) = response {
-                if let Ok(ip_str) = response.text().await {
-                    let trimmed = ip_str.trim();
-                    if let Ok(ip) = IpAddr::from_str(trimmed) {
-                        return Some(ip);
-                    }
+            if let Ok(ip_str) = response.text().await {
+                let trimmed = ip_str.trim();
+                if let Ok(ip) = IpAddr::from_str(trimmed) {
+                    return Some(ip);
                 }
             }
         }

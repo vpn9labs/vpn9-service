@@ -63,7 +63,7 @@ impl UpdateManager {
                         error = %e,
                         "Failed to calculate checksum"
                     );
-                    Status::internal(format!("Failed to calculate checksum: {}", e))
+                    Status::internal(format!("Failed to calculate checksum: {e}"))
                 })?;
                 let file_size = fs::metadata(&update_file_path)
                     .map_err(|e| {
@@ -72,7 +72,7 @@ impl UpdateManager {
                             error = %e,
                             "Failed to get file size"
                         );
-                        Status::internal(format!("Failed to get file size: {}", e))
+                        Status::internal(format!("Failed to get file size: {e}"))
                     })?
                     .len() as i64;
                 (checksum, file_size)
@@ -182,8 +182,7 @@ impl UpdateManager {
                     );
                     let _ = tx
                         .send(Err(Status::internal(format!(
-                            "Failed to read update file: {}",
-                            e
+                            "Failed to read update file: {e}"
                         ))))
                         .await;
                 }

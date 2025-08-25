@@ -82,7 +82,7 @@ impl UpdateManager {
         });
 
         let mut stream = self.client.download_update(request).await?.into_inner();
-        let temp_file_path = format!("/tmp/vpn9-agent-{}", version);
+        let temp_file_path = format!("/tmp/vpn9-agent-{version}");
         let mut file_data = Vec::new();
 
         while let Some(chunk_result) = stream.message().await? {

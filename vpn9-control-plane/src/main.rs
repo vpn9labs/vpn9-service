@@ -47,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Spawn REST server in background
     let rest_handle = tokio::spawn(async move {
         if let Err(e) = rest_server.run().await {
-            eprintln!("REST server error: {}", e);
+            eprintln!("REST server error: {e}");
         }
     });
 

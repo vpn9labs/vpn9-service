@@ -134,8 +134,8 @@ impl RuntimeSecurity {
         let _secure_mode = self.secure_mode.clone();
 
         thread::spawn(move || {
-            let mut signals = Signals::new(&[SIGTERM]).expect("Failed to register signal handler");
-            for _sig in signals.forever() {
+            let mut signals = Signals::new([SIGTERM]).expect("Failed to register signal handler");
+            if let Some(_sig) = signals.forever().next() {
                 info!("Received termination signal - performing secure shutdown");
 
                 // Clear sensitive memory

@@ -66,7 +66,7 @@ impl VPN9Agent {
         if let Some(ca_path) = ca_cert_path {
             info!("Using custom CA certificate from: {}", ca_path);
             let ca_cert = fs::read(&ca_path)
-                .map_err(|e| format!("Failed to read CA certificate file {}: {}", ca_path, e))?;
+                .map_err(|e| format!("Failed to read CA certificate file {ca_path}: {e}"))?;
             let ca_certificate = Certificate::from_pem(ca_cert);
             tls_config = tls_config.ca_certificate(ca_certificate);
         }

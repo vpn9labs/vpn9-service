@@ -131,7 +131,7 @@ impl WireGuardManager {
         // For now, use a simple approach - in production, control plane should assign this
         let base_ip = "10.8.0";
         let host_part = 2; // This should be dynamically assigned
-        Ok(format!("{}.{}", base_ip, host_part))
+        Ok(format!("{base_ip}.{host_part}"))
     }
 
     fn create_interface(&self) -> Result<(), Box<dyn std::error::Error>> {
@@ -270,7 +270,7 @@ impl WireGuardManager {
         let api_guard = self.wg_api.lock().unwrap();
         if let Some(ref wg_api) = *api_guard {
             let host = wg_api.read_interface_data()?;
-            Ok(format!("{:#?}", host))
+            Ok(format!("{host:#?}"))
         } else {
             Err("WireGuard API not initialized".into())
         }

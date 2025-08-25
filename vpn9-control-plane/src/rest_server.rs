@@ -55,10 +55,10 @@ impl RestServer {
 
     pub async fn run(self) -> Result<(), Box<dyn std::error::Error>> {
         let jwt_public_key_pem = fs::read_to_string(&self.config.jwt_public_key_path)
-            .map_err(|e| format!("Failed to read JWT public key: {}", e))?;
+            .map_err(|e| format!("Failed to read JWT public key: {e}"))?;
 
         let jwt_public_key = DecodingKey::from_rsa_pem(jwt_public_key_pem.as_bytes())
-            .map_err(|e| format!("Failed to parse JWT public key: {}", e))?;
+            .map_err(|e| format!("Failed to parse JWT public key: {e}"))?;
 
         let state = AppState {
             jwt_public_key,

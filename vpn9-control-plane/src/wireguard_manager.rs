@@ -146,3 +146,9 @@ impl WireGuardManager {
         Ok(device.peers.into_values().collect())
     }
 }
+
+impl Default for WireGuardManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}

@@ -154,9 +154,9 @@ impl KeyManager {
             connections.insert(agent_id.to_string(), connection);
         }
 
-        println!("Registered agent {} with WireGuard configuration", agent_id);
-        println!("  Agent Public Key: {}", agent_public_key);
-        println!("  Listen Port: {}", listen_port);
+        println!("Registered agent {agent_id} with WireGuard configuration");
+        println!("  Agent Public Key: {agent_public_key}");
+        println!("  Listen Port: {listen_port}");
 
         Ok(agent_keys)
     }
@@ -314,11 +314,11 @@ pub mod error {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self {
                 ConfigError::MissingEnvVar(var) => {
-                    write!(f, "Missing environment variable: {}", var)
+                    write!(f, "Missing environment variable: {var}")
                 }
-                ConfigError::InvalidValue(msg) => write!(f, "Invalid configuration value: {}", msg),
-                ConfigError::FileNotFound(path) => write!(f, "File not found: {}", path),
-                ConfigError::PermissionDenied(msg) => write!(f, "Permission denied: {}", msg),
+                ConfigError::InvalidValue(msg) => write!(f, "Invalid configuration value: {msg}"),
+                ConfigError::FileNotFound(path) => write!(f, "File not found: {path}"),
+                ConfigError::PermissionDenied(msg) => write!(f, "Permission denied: {msg}"),
             }
         }
     }
