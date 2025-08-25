@@ -2,3 +2,10 @@
 resolver = "3"
 members = ["vpn9-agent", "vpn9-control-plane", "vpn9-core"]
 
+[workspace.package]
+# Shared package metadata for workspace members that opt-in to inherit.
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+repository = "https://github.com/vpn9labs/vpn9-service"
+homepage = "https://github.com/vpn9labs/vpn9-service"

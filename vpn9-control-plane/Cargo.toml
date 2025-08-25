@@ -3,6 +3,10 @@ name = "vpn9-control-plane"
 version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-only"
+description = "Control plane for VPN9: gRPC + REST APIs with TLS and WireGuard management."
+keywords = ["vpn", "wireguard", "grpc", "rest", "control-plane", "tls"]
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 axum = { version = "0.7", features = ["tokio"] }

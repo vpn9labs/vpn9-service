@@ -3,6 +3,10 @@ name = "vpn9-agent"
 version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-only"
+description = "Lightweight VPN9 agent for POP nodes; registers with control plane and configures WireGuard."
+keywords = ["vpn", "wireguard", "agent", "grpc", "tls"]
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 base64 = "0.22"

@@ -176,7 +176,7 @@ Complete Pipeline:
 
 ### Project Structure
 ```
-vpn9-rs/
+vpn9-service/
 ├── vpn9-control-plane/     # Control plane service
 │   ├── src/
 │   │   ├── lib.rs          # Module organization & key management

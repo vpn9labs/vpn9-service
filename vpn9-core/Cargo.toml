@@ -3,6 +3,10 @@ name = "vpn9-core"
 version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-only"
+description = "Shared protobuf types, gRPC service definitions, and common utilities for VPN9."
+keywords = ["vpn", "grpc", "protobuf", "types"]
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 prost = "0.14.1"
