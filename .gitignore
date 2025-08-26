@@ -20,3 +20,4 @@ Cargo.lock
 
 # Alpine build artifacts
 alpine-build/artifacts/
+.env

@@ -43,6 +43,20 @@ Shared protocol definitions and common utilities used across all components.
 
 ### Development Environment
 
+Create a `.env` with any secrets or credentials you don’t want committed:
+```
+# .env (not committed)
+DOCKER_REGISTRY_USERNAME=your-gh-username
+DOCKER_REGISTRY_PASSWORD=ghp_xxx_with_read_packages
+REDIS_PASSWORD=supersecret
+# Optional overrides (defaults shown)
+# REDIS_HOST=10.0.0.4
+# REDIS_PORT=6379
+# REDIS_DB=1
+```
+
+The Makefile automatically loads `.env` and `.env.local` if present.
+
 1. **Generate TLS certificates**:
    ```bash
    make certs-generate

@@ -1,13 +1,15 @@
 # Multi-stage build for VPN9 Control Plane
-# Stage 1: Build the application
-FROM rust:1.89-slim AS builder
+##########################################
+# Stage 1: Build a static (musl) binary to avoid glibc version issues
+FROM rust:1.89-alpine AS builder
 
-# Install required system dependencies
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    protobuf-compiler \
-    && rm -rf /var/lib/apt/lists/*
+# Install required system dependencies for musl build
+RUN apk add --no-cache \
+    musl-dev \
+    build-base \
+    protobuf \
+    protobuf-dev \
+    pkgconfig
 
 # Set working directory
 WORKDIR /app
@@ -20,8 +22,10 @@ COPY vpn9-core/ ./vpn9-core/
 COPY vpn9-control-plane/ ./vpn9-control-plane/
 COPY vpn9-agent/ ./vpn9-agent/
 
-# Build the control plane (release mode for smaller binary)
-RUN cargo build --release --bin vpn9-control-plane
+# Build for musl (static)
+RUN rustup target add x86_64-unknown-linux-musl
+ENV RUSTFLAGS="-C target-feature=+crt-static"
+RUN cargo build --release --target x86_64-unknown-linux-musl --bin vpn9-control-plane
 
 # Stage 2: Runtime image
 FROM debian:12-slim AS runtime
@@ -40,8 +44,8 @@ RUN useradd -r -s /bin/false vpn9-control-plane
 RUN mkdir -p /opt/vpn9/updates /opt/vpn9/certs && \
     chown -R vpn9-control-plane:vpn9-control-plane /opt/vpn9
 
-# Copy the built binary from builder stage
-COPY --from=builder /app/target/release/vpn9-control-plane /usr/local/bin/vpn9-control-plane
+# Copy the built static binary from builder stage
+COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/vpn9-control-plane /usr/local/bin/vpn9-control-plane
 
 # Make binary executable
 RUN chmod +x /usr/local/bin/vpn9-control-plane

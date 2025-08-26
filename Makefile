@@ -1,5 +1,15 @@
 # VPN9 Control Plane Docker Build and Push
 
+# Load environment variables from .env and .env.local if present
+ifneq (,$(wildcard .env))
+include .env
+endif
+ifneq (,$(wildcard .env.local))
+include .env.local
+endif
+# Export all variables to subprocesses (docker, ansible, etc.)
+export
+
 REGISTRY := ghcr.io
 IMAGE_NAME := vpn9labs/vpn9-control-plane
 TAG := latest
@@ -72,6 +82,7 @@ ansible-deploy: ansible-check
 	cd $(ANSIBLE_DIR) && $(ANSIBLE_PLAYBOOK) $(ANSIBLE_OPTS) \
 		$(if $(DOCKER_REGISTRY_USERNAME),-e docker_registry_username="$(DOCKER_REGISTRY_USERNAME)") \
 		$(if $(DOCKER_REGISTRY_PASSWORD),-e docker_registry_password="$(DOCKER_REGISTRY_PASSWORD)") \
+		$(if $(REDIS_PASSWORD),-e redis_password="$(REDIS_PASSWORD)") \
 		deploy-control-plane.yml
 
 ansible-setup: ansible-check
@@ -82,6 +93,7 @@ ansible-setup: ansible-check
 	cd $(ANSIBLE_DIR) && $(ANSIBLE_PLAYBOOK) $(ANSIBLE_OPTS) \
 		$(if $(DOCKER_REGISTRY_USERNAME),-e docker_registry_username="$(DOCKER_REGISTRY_USERNAME)") \
 		$(if $(DOCKER_REGISTRY_PASSWORD),-e docker_registry_password="$(DOCKER_REGISTRY_PASSWORD)") \
+		$(if $(REDIS_PASSWORD),-e redis_password="$(REDIS_PASSWORD)") \
 		site.yml
 
 ansible-clean: ansible-check
