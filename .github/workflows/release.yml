@@ -1,0 +1,69 @@
+name: Release Binaries
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  TARGET: x86_64-unknown-linux-gnu
+
+jobs:
+  linux-x86_64:
+    name: Build and upload (linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            protobuf-compiler \
+            pkg-config \
+            libssl-dev
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Cache cargo/target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Build release binaries
+        run: |
+          cargo build --locked --release -p vpn9-control-plane -p vpn9-agent
+
+      - name: Strip binaries (smaller artifacts)
+        run: |
+          strip target/release/vpn9-control-plane || true
+          strip target/release/vpn9-agent || true
+
+      - name: Package artifacts
+        run: |
+          mkdir -p dist
+          tar -C target/release -czf dist/vpn9-control-plane-${{ env.TARGET }}-${{ github.ref_name }}.tar.gz vpn9-control-plane
+          tar -C target/release -czf dist/vpn9-agent-${{ env.TARGET }}-${{ github.ref_name }}.tar.gz vpn9-agent
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/vpn9-control-plane-${{ env.TARGET }}-${{ github.ref_name }}.tar.gz
+            dist/vpn9-agent-${{ env.TARGET }}-${{ github.ref_name }}.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
