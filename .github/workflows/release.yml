@@ -4,6 +4,16 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Git tag to release (e.g., v0.1.0)"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark as prerelease"
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -22,8 +32,25 @@ jobs:
     name: Build and upload (linux x86_64)
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout (release)
+        if: github.event_name == 'release'
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Checkout (manual)
+        if: github.event_name != 'release'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Resolve tag name
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "TAG_NAME=${{ github.event.release.tag_name }}" >> $GITHUB_ENV
+          else
+            echo "TAG_NAME=${{ inputs.tag }}" >> $GITHUB_ENV
+          fi
 
       - name: Install build dependencies
         run: |
@@ -56,14 +83,18 @@ jobs:
       - name: Package artifacts
         run: |
           mkdir -p dist
-          tar -C target/release -czf dist/vpn9-control-plane-${{ env.TARGET }}-${{ github.ref_name }}.tar.gz vpn9-control-plane
-          tar -C target/release -czf dist/vpn9-agent-${{ env.TARGET }}-${{ github.ref_name }}.tar.gz vpn9-agent
+          tar -C target/release -czf dist/vpn9-control-plane-${{ env.TARGET }}-${{ env.TAG_NAME }}.tar.gz vpn9-control-plane
+          tar -C target/release -czf dist/vpn9-agent-${{ env.TARGET }}-${{ env.TAG_NAME }}.tar.gz vpn9-agent
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.TAG_NAME }}
           files: |
-            dist/vpn9-control-plane-${{ env.TARGET }}-${{ github.ref_name }}.tar.gz
-            dist/vpn9-agent-${{ env.TARGET }}-${{ github.ref_name }}.tar.gz
+            dist/vpn9-control-plane-${{ env.TARGET }}-${{ env.TAG_NAME }}.tar.gz
+            dist/vpn9-agent-${{ env.TARGET }}-${{ env.TAG_NAME }}.tar.gz
+          generate_release_notes: true
+          make_latest: true
+          prerelease: ${{ inputs.prerelease }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
