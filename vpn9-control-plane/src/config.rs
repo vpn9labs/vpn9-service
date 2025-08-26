@@ -16,10 +16,6 @@ pub struct Config {
     pub tls_key_path: String,
     /// Domain name for TLS verification
     pub tls_domain: String,
-    /// REST API server address
-    pub rest_bind_address: SocketAddr,
-    /// Path to JWT public key for authentication
-    pub jwt_public_key_path: String,
     /// WireGuard interface name
     pub wireguard_interface: String,
     /// WireGuard private key
@@ -56,13 +52,6 @@ impl Config {
         let tls_domain =
             std::env::var("VPN9_TLS_DOMAIN").unwrap_or_else(|_| "vpn9-control-plane".to_string());
 
-        let rest_bind_address = std::env::var("VPN9_REST_BIND_ADDRESS")
-            .unwrap_or_else(|_| "0.0.0.0:8080".to_string())
-            .parse()?;
-
-        let jwt_public_key_path = std::env::var("VPN9_JWT_PUBLIC_KEY_PATH")
-            .unwrap_or_else(|_| "./certs/jwt_public.pem".to_string());
-
         let wireguard_interface =
             std::env::var("VPN9_WIREGUARD_INTERFACE").unwrap_or_else(|_| "wg0".to_string());
 
@@ -93,8 +82,6 @@ impl Config {
             tls_cert_path = %tls_cert_path,
             tls_key_path = %tls_key_path,
             tls_domain = %tls_domain,
-            rest_bind_address = %rest_bind_address,
-            jwt_public_key_path = %jwt_public_key_path,
             wireguard_interface = %wireguard_interface,
             wireguard_listen_port = %wireguard_listen_port,
             wireguard_interface_address = %wireguard_interface_address,
@@ -108,8 +95,6 @@ impl Config {
             tls_cert_path,
             tls_key_path,
             tls_domain,
-            rest_bind_address,
-            jwt_public_key_path,
             wireguard_interface,
             wireguard_private_key,
             wireguard_listen_port,
@@ -126,14 +111,6 @@ impl Config {
 
         if !std::path::Path::new(&self.tls_key_path).exists() {
             return Err(format!("TLS key file not found: {}", self.tls_key_path).into());
-        }
-
-        // Check if JWT public key file exists
-        if !std::path::Path::new(&self.jwt_public_key_path).exists() {
-            warn!(
-                "JWT public key file not found: {}, REST API authentication will not work",
-                self.jwt_public_key_path
-            );
         }
 
         // Create update directory if it doesn't exist
@@ -161,8 +138,6 @@ impl Default for Config {
             tls_cert_path: "./certs/server.crt".to_string(),
             tls_key_path: "./certs/server.key".to_string(),
             tls_domain: "vpn9-control-plane".to_string(),
-            rest_bind_address: "0.0.0.0:8080".parse().unwrap(),
-            jwt_public_key_path: "./certs/jwt_public.pem".to_string(),
             wireguard_interface: "wg0".to_string(),
             wireguard_private_key: "".to_string(),
             wireguard_listen_port: 51820,

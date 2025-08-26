@@ -3,24 +3,18 @@ name = "vpn9-control-plane"
 version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-only"
-description = "Control plane for VPN9: gRPC + REST APIs with TLS and WireGuard management."
-keywords = ["vpn", "wireguard", "grpc", "rest", "control-plane", "tls"]
+description = "Control plane for VPN9: TLS gRPC server with WireGuard management."
+keywords = ["vpn", "wireguard", "grpc", "control-plane", "tls"]
 repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-axum = { version = "0.7", features = ["tokio"] }
 base64 = "0.22"
 defguard_wireguard_rs = "0.7.5"
-jsonwebtoken = "9.3"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
 tokio = { version = "1.47.0", features = ["full"] }
 tokio-stream = "0.1"
 tonic = { version = "0.14.0", features = ["tls-webpki-roots"] }
 rustls = { version = "0.23", features = ["ring"] }
-tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tonic-build = "0.14.0"
