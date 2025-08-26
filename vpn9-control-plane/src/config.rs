@@ -24,6 +24,10 @@ pub struct Config {
     pub wireguard_listen_port: u32,
     /// WireGuard interface address
     pub wireguard_interface_address: String,
+    /// Redis URL for device registry
+    pub redis_url: String,
+    /// Poll interval in seconds for registry refresh
+    pub registry_poll_interval_secs: u64,
 }
 
 impl Config {
@@ -75,6 +79,15 @@ impl Config {
         let wireguard_interface_address = std::env::var("VPN9_WIREGUARD_INTERFACE_ADDRESS")
             .unwrap_or_else(|_| "10.0.0.1/24".to_string());
 
+        let redis_url = std::env::var("KREDIS_URL")
+            .or_else(|_| std::env::var("REDIS_URL"))
+            .unwrap_or_else(|_| "redis://127.0.0.1:6379/1".to_string());
+
+        let registry_poll_interval_secs: u64 = std::env::var("VPN9_REGISTRY_POLL_INTERVAL_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(10);
+
         info!(
             bind_address = %bind_address,
             current_version = %current_version,
@@ -85,6 +98,8 @@ impl Config {
             wireguard_interface = %wireguard_interface,
             wireguard_listen_port = %wireguard_listen_port,
             wireguard_interface_address = %wireguard_interface_address,
+            redis_url = %redis_url,
+            registry_poll_interval_secs = %registry_poll_interval_secs,
             "Configuration loaded from environment"
         );
 
@@ -99,6 +114,8 @@ impl Config {
             wireguard_private_key,
             wireguard_listen_port,
             wireguard_interface_address,
+            redis_url,
+            registry_poll_interval_secs,
         })
     }
 
@@ -142,6 +159,8 @@ impl Default for Config {
             wireguard_private_key: "".to_string(),
             wireguard_listen_port: 51820,
             wireguard_interface_address: "10.0.0.1/24".to_string(),
+            redis_url: "redis://127.0.0.1:6379/1".to_string(),
+            registry_poll_interval_secs: 10,
         }
     }
 }

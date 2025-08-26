@@ -41,6 +41,7 @@
 
 pub mod agent_manager;
 pub mod config;
+pub mod device_registry;
 pub mod server;
 pub mod service;
 pub mod update_manager;

@@ -5,6 +5,7 @@ use tracing::{error, info};
 use vpn9_core::control_plane::control_plane_server::ControlPlaneServer;
 
 use crate::config::Config;
+use crate::device_registry::DeviceRegistry;
 use crate::service::VPN9ControlPlane;
 
 /// TLS server configuration and startup logic
@@ -50,8 +51,26 @@ impl TlsServer {
             "TLS certificate and private key loaded successfully"
         );
 
-        // Create the control plane service
-        let control_plane = VPN9ControlPlane::new(self.config.clone());
+        // Initialize device registry (Redis) and start background polling
+        let registry =
+            std::sync::Arc::new(DeviceRegistry::new(&self.config.redis_url).await.map_err(
+                |e| {
+                    format!(
+                        "Failed to connect to Redis at {}: {}",
+                        self.config.redis_url, e
+                    )
+                },
+            )?);
+        registry
+            .full_sync()
+            .await
+            .map_err(|e| format!("Failed initial device registry sync: {}", e))?;
+        registry
+            .clone()
+            .start_polling(self.config.registry_poll_interval_secs);
+
+        // Create the control plane service with registry
+        let control_plane = VPN9ControlPlane::new_with_registry(self.config.clone(), registry);
 
         info!("VPN9 Control Plane server starting...");
         let server = match Server::builder().tls_config(tls_config) {

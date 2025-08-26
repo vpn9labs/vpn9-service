@@ -11,14 +11,15 @@ use vpn9_core::control_plane::{
 use crate::AgentKeys;
 use crate::agent_manager::AgentManager;
 use crate::config::Config;
+use crate::device_registry::DeviceRegistry;
 use crate::update_manager::UpdateManager;
 
 /// Main VPN9 Control Plane service that implements the gRPC interface
-#[derive(Debug)]
 pub struct VPN9ControlPlane {
     config: Config,
     update_manager: UpdateManager,
     agent_manager: AgentManager,
+    registry: Option<std::sync::Arc<DeviceRegistry>>,
 }
 
 impl VPN9ControlPlane {
@@ -32,11 +33,30 @@ impl VPN9ControlPlane {
 
         let update_manager = UpdateManager::new(config.clone());
         let agent_manager = AgentManager::new(); // Use cleanup in production
+        Self {
+            config,
+            update_manager,
+            agent_manager,
+            registry: None,
+        }
+    }
+
+    /// Preferred constructor: inject initialized device registry
+    pub fn new_with_registry(config: Config, registry: std::sync::Arc<DeviceRegistry>) -> Self {
+        info!(
+            version = %config.current_version,
+            update_path = %config.update_path,
+            "Initializing VPN9 Control Plane service (with registry)"
+        );
+
+        let update_manager = UpdateManager::new(config.clone());
+        let agent_manager = AgentManager::new();
 
         Self {
             config,
             update_manager,
             agent_manager,
+            registry: Some(registry),
         }
     }
 

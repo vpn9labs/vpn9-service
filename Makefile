@@ -1,7 +1,7 @@
 # VPN9 Control Plane Docker Build and Push
 
 REGISTRY := ghcr.io
-IMAGE_NAME := technicalotter/vpn9-control-plane
+IMAGE_NAME := vpn9labs/vpn9-control-plane
 TAG := latest
 
 # Ansible configuration
@@ -67,21 +67,21 @@ ansible-docker-setup: ansible-check
 ansible-deploy: ansible-check
 	@echo "Deploying VPN9 control plane..."
 	@if [ -z "$(DOCKER_REGISTRY_USERNAME)" ] || [ -z "$(DOCKER_REGISTRY_PASSWORD)" ]; then \
-		echo "Warning: DOCKER_REGISTRY_USERNAME and DOCKER_REGISTRY_PASSWORD not set. Registry login will be skipped."; \
+		echo "Info: DOCKER_REGISTRY_USERNAME/PASSWORD not set. Registry login will be skipped."; \
 	fi
 	cd $(ANSIBLE_DIR) && $(ANSIBLE_PLAYBOOK) $(ANSIBLE_OPTS) \
-		-e docker_registry_username="$(DOCKER_REGISTRY_USERNAME)" \
-		-e docker_registry_password="$(DOCKER_REGISTRY_PASSWORD)" \
+		$(if $(DOCKER_REGISTRY_USERNAME),-e docker_registry_username="$(DOCKER_REGISTRY_USERNAME)") \
+		$(if $(DOCKER_REGISTRY_PASSWORD),-e docker_registry_password="$(DOCKER_REGISTRY_PASSWORD)") \
 		deploy-control-plane.yml
 
 ansible-setup: ansible-check
 	@echo "Running complete setup (Docker + Control Plane)..."
 	@if [ -z "$(DOCKER_REGISTRY_USERNAME)" ] || [ -z "$(DOCKER_REGISTRY_PASSWORD)" ]; then \
-		echo "Warning: DOCKER_REGISTRY_USERNAME and DOCKER_REGISTRY_PASSWORD not set. Registry login will be skipped."; \
+		echo "Info: DOCKER_REGISTRY_USERNAME/PASSWORD not set. Registry login will be skipped."; \
 	fi
 	cd $(ANSIBLE_DIR) && $(ANSIBLE_PLAYBOOK) $(ANSIBLE_OPTS) \
-		-e docker_registry_username="$(DOCKER_REGISTRY_USERNAME)" \
-		-e docker_registry_password="$(DOCKER_REGISTRY_PASSWORD)" \
+		$(if $(DOCKER_REGISTRY_USERNAME),-e docker_registry_username="$(DOCKER_REGISTRY_USERNAME)") \
+		$(if $(DOCKER_REGISTRY_PASSWORD),-e docker_registry_password="$(DOCKER_REGISTRY_PASSWORD)") \
 		site.yml
 
 ansible-clean: ansible-check
