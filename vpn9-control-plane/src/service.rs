@@ -130,6 +130,7 @@ mod tests {
             config,
             update_manager,
             agent_manager,
+            registry: None,
         }
     }
 
