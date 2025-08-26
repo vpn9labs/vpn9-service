@@ -5,10 +5,10 @@ VPN9 is a high-performance, secure VPN infrastructure built in Rust, featuring a
 ## 🏗️ Architecture
 
 ### Control Plane
-The control plane exposes two interfaces and manages VPN state:
+The control plane manages VPN state and exposes a single TLS gRPC interface:
 - **gRPC (TLS)**: agent subscription, update checks, and streaming updates
-- **REST (8080)**: JWT-authenticated peer registration for WireGuard
 - **WireGuard**: interface setup and peer lifecycle
+- **Device Registry (Redis)**: read-only sync of allowed devices and metadata
 - **Config via env**: sane defaults with runtime validation
 
 **Key Components:**
@@ -17,7 +17,7 @@ The control plane exposes two interfaces and manages VPN state:
 - `agent_manager.rs` - Agent subscription and lifecycle
 - `update_manager.rs` - Update checks, chunked downloads, SHA256 verification
 - `server.rs` - TLS gRPC server + builder
-- `rest_server.rs` - JWT-verified `POST /register` endpoint
+- `device_registry.rs` - Redis-backed device registry consumer
 - `wireguard_manager.rs` - WireGuard interface and peer management
 - `lib.rs` - Public API and in-memory key/agent registry
 
@@ -28,12 +28,7 @@ Lightweight agent that runs on POP servers and client endpoints, handling:
 - System integration
 - Automatic updates
 
-Example REST registration (requires a valid JWT signed by the configured public key; if using docker-compose, expose `8080:8080` first):
-```bash
-curl -X POST http://localhost:8080/register \
-  -H 'Content-Type: application/json' \
-  -d '{"pubkey":"<base64-public-key>","token":"<jwt>"}'
-```
+The agent connects only over gRPC (no REST endpoint).
 
 ### VPN9 Core
 Shared protocol definitions and common utilities used across all components.
@@ -156,12 +151,12 @@ Complete Pipeline:
 | `VPN9_TLS_CERT_PATH` | TLS certificate (PEM) | `./certs/server.crt` |
 | `VPN9_TLS_KEY_PATH` | TLS private key (PEM) | `./certs/server.key` |
 | `VPN9_TLS_DOMAIN` | Expected SNI/server name | `vpn9-control-plane` |
-| `VPN9_REST_BIND_ADDRESS` | REST bind address | `0.0.0.0:8080` |
-| `VPN9_JWT_PUBLIC_KEY_PATH` | JWT RSA public key (PEM) | `./certs/jwt_public.pem` |
 | `VPN9_WIREGUARD_INTERFACE` | WireGuard interface name | `wg0` |
 | `VPN9_WIREGUARD_PRIVATE_KEY` | Base64 private key (optional) | generated/empty |
 | `VPN9_WIREGUARD_LISTEN_PORT` | WireGuard UDP port | `51820` |
 | `VPN9_WIREGUARD_INTERFACE_ADDRESS` | CIDR for interface | `10.0.0.1/24` |
+| `REDIS_URL` / `KREDIS_URL` | Redis URL for DeviceRegistry | `redis://127.0.0.1:6379/1` |
+| `VPN9_REGISTRY_POLL_INTERVAL_SECS` | Registry poll interval | `10` |
 
 ### Certificate Configuration
 
@@ -186,7 +181,7 @@ vpn9-service/
 │   │   ├── agent_manager.rs # Agent subscription handling
 │   │   ├── update_manager.rs # Update distribution
 │   │   ├── wireguard_manager.rs # WireGuard interface/peers
-│   │   ├── rest_server.rs  # JWT-auth REST /register
+│   │   ├── device_registry.rs # Redis DeviceRegistry consumer
 │   │   └── server.rs       # TLS server setup
 │   └── Dockerfile
 ├── vpn9-agent/            # VPN agent for POP servers
@@ -227,10 +222,20 @@ grpcurl -cacert certs/ca.crt -authority vpn9-control-plane \
 ## 🛡️ Security
 
 - **TLS 1.3**: gRPC secured with server-side TLS (self-signed CA in dev)
-- **JWT validation**: REST `/register` verifies RS256/384/512-signed tokens
+- **Device Authorization**: Read-only from Redis DeviceRegistry (`vpn9:devices:active` + `vpn9:device:<id>`)
 - **SHA256 checksums**: Update integrity verification
 - **WireGuard**: Interface + peers managed by control plane
 - **Rust memory safety**: `rustls`, `tonic`, `tokio` throughout
+
+## 📚 Device Registry
+
+- Source of truth lives in Redis, maintained by the Rails app.
+- Control plane performs a startup full sync and periodic poll-and-diff refresh.
+- Keys used:
+  - `vpn9:devices:active` (Set of active device IDs)
+  - `vpn9:device:<id>` (Hash with `public_key`, `ipv4`, `ipv6`, `allowed_ips`, etc.)
+- In-memory indexes are maintained by device id and public key for handshake-time authorization.
+- Missing/incomplete hashes are treated as “not yet ready” and retried on subsequent polls.
 
 ## 📝 Logging
 
