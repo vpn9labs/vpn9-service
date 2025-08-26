@@ -7,25 +7,38 @@ use tracing::{debug, error, info, warn};
 
 use vpn9_core::control_plane::{
     AgentRegistration, AgentSubscriptionMessage, AgentSubscriptionRequest, HealthCheck,
-    agent_subscription_message::Message,
+    PeerRegistrationRequest, agent_subscription_message::Message,
 };
 
+use crate::device_registry::DeviceRegistry;
 use crate::{AgentKeys, KeyManager};
 
 /// Manages agent subscriptions and registrations
-#[derive(Debug)]
 pub struct AgentManager {
     key_manager: KeyManager,
+    registry: Option<std::sync::Arc<DeviceRegistry>>,
 }
 
 impl AgentManager {
     pub fn new() -> Self {
-        Self::new_with_cleanup(true)
+        Self::new_with_cleanup_with_registry(true, None)
     }
 
     pub fn new_with_cleanup(start_cleanup: bool) -> Self {
+        Self::new_with_cleanup_with_registry(start_cleanup, None)
+    }
+
+    pub fn new_with_registry(registry: std::sync::Arc<DeviceRegistry>) -> Self {
+        Self::new_with_cleanup_with_registry(true, Some(registry))
+    }
+
+    pub fn new_with_cleanup_with_registry(
+        start_cleanup: bool,
+        registry: Option<std::sync::Arc<DeviceRegistry>>,
+    ) -> Self {
         let manager = Self {
             key_manager: KeyManager::new(),
+            registry,
         };
 
         // Start cleanup task only if requested (for production use)
@@ -104,6 +117,7 @@ impl AgentManager {
         };
 
         let key_manager_clone = self.key_manager.clone();
+        let registry = self.registry.clone();
         tokio::spawn(async move {
             // Send initial registration confirmation with WireGuard configuration
             let subscription_msg = AgentSubscriptionMessage {
@@ -126,6 +140,41 @@ impl AgentManager {
                     "Failed to send registration response - client disconnected"
                 );
                 return;
+            }
+
+            // Seed device peers from DeviceRegistry
+            if let Some(reg) = registry.as_ref() {
+                match reg
+                    .list_all_devices()
+                    .await
+                    .into_iter()
+                    .take(200)
+                    .collect::<Vec<_>>()
+                {
+                    devices if !devices.is_empty() => {
+                        info!(
+                            agent_id = %agent_id,
+                            device_count = devices.len(),
+                            "Seeding device peers from registry"
+                        );
+                        for dev in devices {
+                            let msg = AgentSubscriptionMessage {
+                                agent_id: agent_id.clone(),
+                                message: Some(Message::PeerRegistrationRequest(
+                                    PeerRegistrationRequest {
+                                        agent_id: agent_id.clone(),
+                                        public_key: dev.public_key.clone(),
+                                    },
+                                )),
+                            };
+                            if tx.send(Ok(msg)).await.is_err() {
+                                warn!(agent_id = %agent_id, "Client disconnected while seeding peers");
+                                break;
+                            }
+                        }
+                    }
+                    _ => debug!(agent_id = %agent_id, "No devices found in registry to seed"),
+                }
             }
 
             // Start health monitoring

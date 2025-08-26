@@ -67,9 +67,7 @@ pub struct DeviceRegistry {
 }
 
 impl DeviceRegistry {
-    pub async fn new(
-        redis_url: &str,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn new(redis_url: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let client = redis::Client::open(redis_url)?;
         let conn = redis::aio::ConnectionManager::new(client).await?;
         Ok(Self {
@@ -223,7 +221,8 @@ impl DeviceRegistry {
     async fn fetch_devices_bulk(
         &self,
         ids: &HashSet<String>,
-    ) -> Result<HashMap<String, Option<DeviceRecord>>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<HashMap<String, Option<DeviceRecord>>, Box<dyn std::error::Error + Send + Sync>>
+    {
         use redis::FromRedisValue;
         let mut conn = self.conn.clone();
 
@@ -240,7 +239,7 @@ impl DeviceRegistry {
             pipe.atomic();
             let mut keys = Vec::with_capacity(chunk.len());
             for id in chunk {
-                let key = format!("vpn9:device:{}", id);
+                let key = format!("vpn9:device:{id}");
                 keys.push((id.clone(), key.clone()));
                 pipe.cmd("HGETALL").arg(key);
             }
@@ -283,6 +282,10 @@ impl DeviceRegistry {
     pub async fn get_by_pubkey(&self, public_key: &str) -> Option<DeviceRecord> {
         let id = self.by_pubkey.read().await.get(public_key).cloned()?;
         self.get_by_id(&id).await
+    }
+
+    pub async fn list_all_devices(&self) -> Vec<DeviceRecord> {
+        self.by_id.read().await.values().cloned().collect()
     }
 }
 

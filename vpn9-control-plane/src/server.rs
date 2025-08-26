@@ -64,7 +64,7 @@ impl TlsServer {
         registry
             .full_sync()
             .await
-            .map_err(|e| format!("Failed initial device registry sync: {}", e))?;
+            .map_err(|e| format!("Failed initial device registry sync: {e}"))?;
         registry
             .clone()
             .start_polling(self.config.registry_poll_interval_secs);

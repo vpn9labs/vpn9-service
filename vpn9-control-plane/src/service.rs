@@ -50,7 +50,7 @@ impl VPN9ControlPlane {
         );
 
         let update_manager = UpdateManager::new(config.clone());
-        let agent_manager = AgentManager::new();
+        let agent_manager = AgentManager::new_with_registry(registry.clone());
 
         Self {
             config,
@@ -113,6 +113,9 @@ impl ControlPlane for VPN9ControlPlane {
         &self,
         request: Request<AgentSubscriptionRequest>,
     ) -> Result<Response<Self::SubscribeAgentStream>, Status> {
+        if self.registry.is_some() {
+            info!("Device registry available; seeding peers on subscribe");
+        }
         self.agent_manager.subscribe_agent(request).await
     }
 }
