@@ -9,6 +9,10 @@ on:
         description: "Git tag to release (e.g., v0.1.0)"
         required: true
         type: string
+      commitish:
+        description: "Commit/branch to build (defaults to selected branch)"
+        required: false
+        type: string
       prerelease:
         description: "Mark as prerelease"
         required: false
@@ -38,11 +42,15 @@ jobs:
         with:
           ref: ${{ github.event.release.tag_name }}
 
-      - name: Checkout (manual)
-        if: github.event_name != 'release'
+      - name: Checkout (manual, explicit commitish)
+        if: github.event_name != 'release' && inputs.commitish != ''
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.commitish }}
+
+      - name: Checkout (manual, default)
+        if: github.event_name != 'release' && inputs.commitish == ''
+        uses: actions/checkout@v4
 
       - name: Resolve tag name
         run: |
@@ -90,6 +98,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG_NAME }}
+          target_commitish: ${{ github.sha }}
           files: |
             dist/vpn9-control-plane-${{ env.TARGET }}-${{ env.TAG_NAME }}.tar.gz
             dist/vpn9-agent-${{ env.TARGET }}-${{ env.TAG_NAME }}.tar.gz
