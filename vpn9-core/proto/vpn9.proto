@@ -48,7 +48,17 @@ message AgentSubscriptionRequest {
   string wg_public_key = 8; // Agent-generated public key
 }
 
-message PeerRegistrationRequest {
+message PeerAdd {
+  string agent_id = 1;
+  string public_key = 2;
+  // Explicit allowed IPs for the peer (can include IPv4 and IPv6 CIDRs)
+  repeated string allowed_ips = 3;
+  // Device IPv6 address (informational; allowed_ips should be the source of truth)
+  string ipv6 = 4;
+}
+
+// Request to remove a previously registered peer
+message PeerRemove {
   string agent_id = 1;
   string public_key = 2;
 }
@@ -73,7 +83,8 @@ message AgentSubscriptionMessage {
   string agent_id = 1;
   oneof message {
     AgentRegistration agent_registration = 2;
-    PeerRegistrationRequest peer_registration_request = 3;
+    PeerAdd peer_add = 3;
+    PeerRemove peer_remove = 7;
     HealthCheck health_check = 4;
     HealthResponse health_response = 5;
     AgentDisconnect agent_disconnect = 6;

@@ -192,14 +192,18 @@ impl VPN9Agent {
                                 }
                             }
                         }
-                        Message::PeerRegistrationRequest(peer_req) => {
+                        Message::PeerAdd(peer_req) => {
                             info!("📡 Peer registration request received:");
                             info!("  Agent ID: {}", peer_req.agent_id);
                             info!("  Public Key: {}", peer_req.public_key);
 
-                            // Add the peer to our WireGuard interface
-                            // In production, the allowed IPs should come from the control plane
-                            let allowed_ips = vec!["0.0.0.0/0".to_string()]; // Allow all traffic through this peer
+                            // Add the peer to our WireGuard interface using provided allowed_ips
+                            let allowed_ips = if !peer_req.allowed_ips.is_empty() {
+                                peer_req.allowed_ips.clone()
+                            } else {
+                                // Fallback: allow all IPv4 if not specified
+                                vec!["0.0.0.0/0".to_string()]
+                            };
 
                             match wg_manager.add_peer(&peer_req.public_key, allowed_ips, None) {
                                 Ok(_) => {
@@ -208,6 +212,16 @@ impl VPN9Agent {
                                 Err(e) => {
                                     error!("❌ Failed to add peer: {}", e);
                                 }
+                            }
+                        }
+                        Message::PeerRemove(peer_rm) => {
+                            info!(
+                                "🗑️ Peer removal request received for: {}",
+                                peer_rm.public_key
+                            );
+                            match wg_manager.remove_peer(&peer_rm.public_key) {
+                                Ok(_) => info!("✅ Peer removed from WireGuard interface"),
+                                Err(e) => error!("❌ Failed to remove peer: {}", e),
                             }
                         }
                         Message::HealthCheck(health_check) => {

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use redis::aio::ConnectionManager;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
 use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Clone)]
@@ -64,18 +64,34 @@ pub struct DeviceRegistry {
     active_ids: Arc<RwLock<HashSet<String>>>,
     by_id: Arc<RwLock<HashMap<String, DeviceRecord>>>,
     by_pubkey: Arc<RwLock<HashMap<String, String>>>, // pubkey -> device_id
+    updates_tx: broadcast::Sender<RegistryDiff>,
+}
+
+#[derive(Debug, Clone)]
+pub enum RegistryDiff {
+    Added(DeviceRecord),
+    Removed {
+        public_key: String,
+        device_id: String,
+    },
 }
 
 impl DeviceRegistry {
     pub async fn new(redis_url: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let client = redis::Client::open(redis_url)?;
         let conn = redis::aio::ConnectionManager::new(client).await?;
+        let (updates_tx, _rx) = broadcast::channel(1024);
         Ok(Self {
             conn,
             active_ids: Arc::new(RwLock::new(HashSet::new())),
             by_id: Arc::new(RwLock::new(HashMap::new())),
             by_pubkey: Arc::new(RwLock::new(HashMap::new())),
+            updates_tx,
         })
+    }
+
+    pub fn subscribe_updates(&self) -> broadcast::Receiver<RegistryDiff> {
+        self.updates_tx.subscribe()
     }
 
     pub async fn full_sync(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -161,6 +177,8 @@ impl DeviceRegistry {
                 match rec_opt {
                     Some(rec) => {
                         by_pk_lock.insert(rec.public_key.clone(), rec.id.clone());
+                        // Send update before/after insert is functionally similar for consumers
+                        self.updates_tx.send(RegistryDiff::Added(rec.clone())).ok();
                         by_id_lock.insert(id, rec);
                     }
                     None => {
@@ -176,6 +194,11 @@ impl DeviceRegistry {
             let mut by_pk_lock = self.by_pubkey.write().await;
             for id in &removed {
                 if let Some(rec) = by_id_lock.remove(id) {
+                    // Notify removal with public key for downstream consumers
+                    let _ = self.updates_tx.send(RegistryDiff::Removed {
+                        public_key: rec.public_key.clone(),
+                        device_id: rec.id.clone(),
+                    });
                     by_pk_lock.remove(&rec.public_key);
                 }
             }

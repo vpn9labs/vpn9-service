@@ -6,11 +6,12 @@ use tonic::{Request, Response, Status};
 use tracing::{debug, error, info, warn};
 
 use vpn9_core::control_plane::{
-    AgentRegistration, AgentSubscriptionMessage, AgentSubscriptionRequest, HealthCheck,
-    PeerRegistrationRequest, agent_subscription_message::Message,
+    AgentRegistration, AgentSubscriptionMessage, AgentSubscriptionRequest, HealthCheck, PeerAdd,
+    PeerRemove, agent_subscription_message::Message,
 };
 
 use crate::device_registry::DeviceRegistry;
+use crate::device_registry::RegistryDiff;
 use crate::{AgentKeys, KeyManager};
 
 /// Manages agent subscriptions and registrations
@@ -86,7 +87,8 @@ impl AgentManager {
             "Agent registration and subscription request received"
         );
 
-        let (tx, rx) = mpsc::channel(4);
+        // Increase channel buffer to reduce backpressure during seeding
+        let (tx, rx) = mpsc::channel(128);
         let agent_id = req.agent_id.clone();
 
         // Register the agent with connection tracking
@@ -142,38 +144,38 @@ impl AgentManager {
                 return;
             }
 
-            // Seed device peers from DeviceRegistry
+            // Seed device peers from DeviceRegistry with chunking to avoid backpressure
             if let Some(reg) = registry.as_ref() {
-                match reg
-                    .list_all_devices()
-                    .await
-                    .into_iter()
-                    .take(200)
-                    .collect::<Vec<_>>()
-                {
-                    devices if !devices.is_empty() => {
-                        info!(
-                            agent_id = %agent_id,
-                            device_count = devices.len(),
-                            "Seeding device peers from registry"
-                        );
-                        for dev in devices {
+                let devices = reg.list_all_devices().await;
+                if !devices.is_empty() {
+                    const SEED_CHUNK_SIZE: usize = 50;
+                    info!(
+                        agent_id = %agent_id,
+                        device_count = devices.len(),
+                        chunk_size = SEED_CHUNK_SIZE,
+                        "Seeding device peers from registry"
+                    );
+                    for chunk in devices.chunks(SEED_CHUNK_SIZE) {
+                        for dev in chunk.iter() {
                             let msg = AgentSubscriptionMessage {
                                 agent_id: agent_id.clone(),
-                                message: Some(Message::PeerRegistrationRequest(
-                                    PeerRegistrationRequest {
-                                        agent_id: agent_id.clone(),
-                                        public_key: dev.public_key.clone(),
-                                    },
-                                )),
+                                message: Some(Message::PeerAdd(PeerAdd {
+                                    agent_id: agent_id.clone(),
+                                    public_key: dev.public_key.clone(),
+                                    allowed_ips: dev.allowed_ips.clone(),
+                                    ipv6: dev.ipv6.clone(),
+                                })),
                             };
                             if tx.send(Ok(msg)).await.is_err() {
                                 warn!(agent_id = %agent_id, "Client disconnected while seeding peers");
                                 break;
                             }
                         }
+                        // Yield between chunks to give the client time to drain
+                        tokio::task::yield_now().await;
                     }
-                    _ => debug!(agent_id = %agent_id, "No devices found in registry to seed"),
+                } else {
+                    debug!(agent_id = %agent_id, "No devices found in registry to seed");
                 }
             }
 
@@ -181,6 +183,9 @@ impl AgentManager {
             let mut health_interval = interval(Duration::from_secs(30)); // Health check every 30 seconds
             let mut missed_health_checks = 0;
             const MAX_MISSED_CHECKS: u32 = 3;
+
+            // Subscribe to registry diffs, if available
+            let mut updates_rx = registry.as_ref().map(|r| r.subscribe_updates());
 
             loop {
                 tokio::select! {
@@ -213,6 +218,47 @@ impl AgentManager {
                                 "Agent failed health checks, removing connection"
                             );
                             break;
+                        }
+                    }
+
+                    // Forward registry diffs to the subscribed agent
+                    Some(diff) = async {
+                        match &mut updates_rx {
+                            Some(rx) => rx.recv().await.ok(),
+                            None => None,
+                        }
+                    } => {
+                        match diff {
+                            RegistryDiff::Added(dev) => {
+                                let msg = AgentSubscriptionMessage {
+                                    agent_id: agent_id.clone(),
+                                    message: Some(Message::PeerAdd(PeerAdd {
+                                        agent_id: agent_id.clone(),
+                                        public_key: dev.public_key.clone(),
+                                        allowed_ips: dev.allowed_ips.clone(),
+                                        ipv6: dev.ipv6.clone(),
+                                    })),
+                                };
+                                if tx.send(Ok(msg)).await.is_err() {
+                                    warn!(agent_id = %agent_id, "Client disconnected while sending device add");
+                                    break;
+                                }
+                            }
+                            RegistryDiff::Removed { public_key, .. } => {
+                                let msg = AgentSubscriptionMessage {
+                                    agent_id: agent_id.clone(),
+                                    message: Some(Message::PeerRemove(
+                                        PeerRemove {
+                                        agent_id: agent_id.clone(),
+                                        public_key,
+                                        }
+                                    )),
+                                };
+                                if tx.send(Ok(msg)).await.is_err() {
+                                    warn!(agent_id = %agent_id, "Client disconnected while sending device remove");
+                                    break;
+                                }
+                            }
                         }
                     }
 
