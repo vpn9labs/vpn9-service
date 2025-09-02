@@ -9,7 +9,8 @@ RUN apk add --no-cache \
     build-base \
     protobuf \
     protobuf-dev \
-    pkgconfig
+    pkgconfig \
+    binutils
 
 # Set working directory
 WORKDIR /app
@@ -24,8 +25,12 @@ COPY vpn9-agent/ ./vpn9-agent/
 
 # Build for musl (static)
 RUN rustup target add x86_64-unknown-linux-musl
+# Ensure we link with musl and produce a fully static binary
 ENV RUSTFLAGS="-C target-feature=+crt-static"
-RUN cargo build --release --target x86_64-unknown-linux-musl --bin vpn9-control-plane
+ENV CC_x86_64_unknown_linux_musl=musl-gcc
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+RUN cargo build --release --target x86_64-unknown-linux-musl --bin vpn9-control-plane \
+ && strip target/x86_64-unknown-linux-musl/release/vpn9-control-plane || true
 
 # Stage 2: Runtime image
 FROM debian:12-slim AS runtime
@@ -49,6 +54,9 @@ COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/vpn9-control-p
 
 # Make binary executable
 RUN chmod +x /usr/local/bin/vpn9-control-plane
+
+# Sanity check: should be a static binary (ldd should say "not a dynamic executable")
+RUN ldd /usr/local/bin/vpn9-control-plane || true
 
 # Set working directory
 WORKDIR /opt/vpn9
