@@ -1,10 +1,4 @@
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use vpn9_control_plane::{
-    Config, TlsServerBuilder,
-    server::TlsServer,
-    wireguard_manager::{WireGuardConfig, WireGuardManager},
-};
+use vpn9_control_plane::{Config, TlsServerBuilder, server::TlsServer};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -14,25 +8,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load configuration from environment
     let config = Config::from_env()?;
-
-    // Initialize WireGuard manager
-    let wireguard_manager = Arc::new(RwLock::new(WireGuardManager::new()));
-
-    // Configure WireGuard if private key is provided
-    if !config.wireguard_private_key.is_empty() {
-        let (_, public_key) = WireGuardManager::generate_keypair()
-            .unwrap_or_else(|_| (config.wireguard_private_key.clone(), String::new()));
-
-        let wg_config = WireGuardConfig {
-            private_key: config.wireguard_private_key.clone(),
-            public_key,
-            listen_port: config.wireguard_listen_port,
-            interface_address: config.wireguard_interface_address.clone(),
-            interface_name: config.wireguard_interface.clone(),
-        };
-
-        wireguard_manager.write().await.configure(wg_config).await?;
-    }
 
     // Create and start the TLS server
     let server = TlsServerBuilder::new().with_config(config).build()?;

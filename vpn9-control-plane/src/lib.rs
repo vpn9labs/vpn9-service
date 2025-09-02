@@ -4,7 +4,7 @@
 //! - Agent registration and management
 //! - Update distribution and management
 //! - TLS-secured gRPC communication
-//! - WireGuard key management
+//! - Agent session tracking and key exchange metadata
 //!
 //! ## Architecture
 //!
@@ -13,7 +13,7 @@
 //! - `service`: Main gRPC service implementation
 //! - `agent_manager`: Agent registration and subscription handling
 //! - `update_manager`: Update distribution and version management
-//! - `key_manager`: WireGuard key generation and management
+//! - `key_manager`: Agent session tracking and port assignment
 //! - `server`: TLS server setup and startup logic
 //!
 //! ## Example Usage
@@ -45,15 +45,12 @@ pub mod device_registry;
 pub mod server;
 pub mod service;
 pub mod update_manager;
-pub mod wireguard_manager;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use base64::Engine;
 use tokio::sync::mpsc;
-use x25519_dalek::{PublicKey, StaticSecret};
 
 #[derive(Debug, Clone)]
 pub struct AgentKeys {
@@ -213,19 +210,7 @@ impl KeyManager {
         expired_agents
     }
 
-    /// Generate peer keys for client connections
-    pub fn generate_peer_keys() -> Result<(String, String), Box<dyn std::error::Error>> {
-        let private_secret = StaticSecret::random();
-        let public_key = PublicKey::from(&private_secret);
-
-        let private_key_bytes: [u8; 32] = private_secret.to_bytes();
-        let public_key_bytes: [u8; 32] = public_key.to_bytes();
-
-        let private_key = base64::engine::general_purpose::STANDARD.encode(private_key_bytes);
-        let public_key = base64::engine::general_purpose::STANDARD.encode(public_key_bytes);
-
-        Ok((private_key, public_key))
-    }
+    // Key generation is handled by agents; control plane does not create keys
 
     /// List all active agents (non-expired)
     pub fn list_agents(&self) -> Vec<String> {

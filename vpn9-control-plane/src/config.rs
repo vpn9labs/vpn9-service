@@ -16,14 +16,7 @@ pub struct Config {
     pub tls_key_path: String,
     /// Domain name for TLS verification
     pub tls_domain: String,
-    /// WireGuard interface name
-    pub wireguard_interface: String,
-    /// WireGuard private key
-    pub wireguard_private_key: String,
-    /// WireGuard listen port
-    pub wireguard_listen_port: u32,
-    /// WireGuard interface address
-    pub wireguard_interface_address: String,
+    // WireGuard settings are managed by agents; kept for compatibility only
     /// Redis URL for device registry
     pub redis_url: String,
     /// Poll interval in seconds for registry refresh
@@ -56,28 +49,7 @@ impl Config {
         let tls_domain =
             std::env::var("VPN9_TLS_DOMAIN").unwrap_or_else(|_| "vpn9-control-plane".to_string());
 
-        let wireguard_interface =
-            std::env::var("VPN9_WIREGUARD_INTERFACE").unwrap_or_else(|_| "wg0".to_string());
-
-        let wireguard_private_key = std::env::var("VPN9_WIREGUARD_PRIVATE_KEY")
-            .ok()
-            .or_else(|| {
-                // Generate a new key if not provided
-                crate::wireguard_manager::WireGuardManager::generate_keypair()
-                    .ok()
-                    .map(|(priv_key, _)| priv_key)
-            })
-            .unwrap_or_else(|| {
-                warn!("VPN9_WIREGUARD_PRIVATE_KEY not set, generating new key");
-                "".to_string()
-            });
-
-        let wireguard_listen_port: u32 = std::env::var("VPN9_WIREGUARD_LISTEN_PORT")
-            .unwrap_or_else(|_| "51820".to_string())
-            .parse()?;
-
-        let wireguard_interface_address = std::env::var("VPN9_WIREGUARD_INTERFACE_ADDRESS")
-            .unwrap_or_else(|_| "10.0.0.1/24".to_string());
+        // WireGuard settings are managed entirely by agents; no control-plane reads
 
         let redis_url = std::env::var("KREDIS_URL")
             .or_else(|_| std::env::var("REDIS_URL"))
@@ -95,9 +67,7 @@ impl Config {
             tls_cert_path = %tls_cert_path,
             tls_key_path = %tls_key_path,
             tls_domain = %tls_domain,
-            wireguard_interface = %wireguard_interface,
-            wireguard_listen_port = %wireguard_listen_port,
-            wireguard_interface_address = %wireguard_interface_address,
+            // WireGuard settings removed from control plane; managed by agents
             redis_url = %redis_url,
             registry_poll_interval_secs = %registry_poll_interval_secs,
             "Configuration loaded from environment"
@@ -110,10 +80,6 @@ impl Config {
             tls_cert_path,
             tls_key_path,
             tls_domain,
-            wireguard_interface,
-            wireguard_private_key,
-            wireguard_listen_port,
-            wireguard_interface_address,
             redis_url,
             registry_poll_interval_secs,
         })
@@ -155,10 +121,6 @@ impl Default for Config {
             tls_cert_path: "./certs/server.crt".to_string(),
             tls_key_path: "./certs/server.key".to_string(),
             tls_domain: "vpn9-control-plane".to_string(),
-            wireguard_interface: "wg0".to_string(),
-            wireguard_private_key: "".to_string(),
-            wireguard_listen_port: 51820,
-            wireguard_interface_address: "10.0.0.1/24".to_string(),
             redis_url: "redis://127.0.0.1:6379/1".to_string(),
             registry_poll_interval_secs: 10,
         }

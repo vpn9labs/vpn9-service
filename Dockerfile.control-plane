@@ -5,11 +5,16 @@ FROM rust:1.89-alpine AS builder
 
 # Install required system dependencies for musl build
 RUN apk add --no-cache \
-    musl-dev \
     build-base \
+    musl-dev \
+    linux-headers \
     protobuf \
     protobuf-dev \
     pkgconfig \
+    cmake \
+    ninja \
+    perl \
+    git \
     binutils
 
 # Set working directory
@@ -27,30 +32,35 @@ COPY vpn9-agent/ ./vpn9-agent/
 RUN rustup target add x86_64-unknown-linux-musl
 # Ensure we link with musl and produce a fully static binary
 ENV RUSTFLAGS="-C target-feature=+crt-static"
-ENV CC_x86_64_unknown_linux_musl=musl-gcc
-ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
-RUN cargo build --release --target x86_64-unknown-linux-musl --bin vpn9-control-plane \
- && strip target/x86_64-unknown-linux-musl/release/vpn9-control-plane || true
+# On Alpine, gcc links against musl by default; use it as linker
+ENV CC_x86_64_unknown_linux_musl=gcc
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=gcc
+RUN set -euo pipefail; \
+    cargo build -p vpn9-control-plane --release --target x86_64-unknown-linux-musl; \
+    mkdir -p /out; \
+    BIN_PATH=$(find target/x86_64-unknown-linux-musl/release -maxdepth 1 -type f -perm -111 -name "vpn9*control*plane*" | head -n1 || true); \
+    echo "Built artifact candidate: ${BIN_PATH:-<none>}"; \
+    test -n "${BIN_PATH}" && cp "${BIN_PATH}" /out/vpn9-control-plane; \
+    strip /out/vpn9-control-plane || true; \
+    file /out/vpn9-control-plane || true
 
 # Stage 2: Runtime image
-FROM debian:12-slim AS runtime
+FROM alpine:3.20 AS runtime
 
 # Install runtime dependencies
-RUN apt-get update && apt-get install -y \
+RUN apk add --no-cache \
     ca-certificates \
-    procps \
-    && rm -rf /var/lib/apt/lists/* \
-    && update-ca-certificates
+ && update-ca-certificates
 
-# Create non-root user for security
-RUN useradd -r -s /bin/false vpn9-control-plane
+# Create fixed non-root user/group (UID:GID 10001)
+RUN addgroup -S -g 10001 vpn9 && adduser -S -D -H -s /sbin/nologin -G vpn9 -u 10001 vpn9
 
 # Create directories
 RUN mkdir -p /opt/vpn9/updates /opt/vpn9/certs && \
-    chown -R vpn9-control-plane:vpn9-control-plane /opt/vpn9
+    chown -R 10001:10001 /opt/vpn9
 
 # Copy the built static binary from builder stage
-COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/vpn9-control-plane /usr/local/bin/vpn9-control-plane
+COPY --from=builder /out/vpn9-control-plane /usr/local/bin/vpn9-control-plane
 
 # Make binary executable
 RUN chmod +x /usr/local/bin/vpn9-control-plane
@@ -61,27 +71,7 @@ RUN ldd /usr/local/bin/vpn9-control-plane || true
 # Set working directory
 WORKDIR /opt/vpn9
 
-# Create an entrypoint script to fix permissions at runtime
-RUN echo '#!/bin/sh\n\
-# Fix certificate permissions if running as root\n\
-if [ "$(id -u)" = "0" ]; then\n\
-    echo "Running as root, fixing certificate permissions..."\n\
-    if [ -d /opt/vpn9/certs ]; then\n\
-        chown -R vpn9-control-plane:vpn9-control-plane /opt/vpn9/certs\n\
-        chmod 600 /opt/vpn9/certs/server.key 2>/dev/null || true\n\
-        chmod 644 /opt/vpn9/certs/server.crt 2>/dev/null || true\n\
-        chmod 644 /opt/vpn9/certs/ca.crt 2>/dev/null || true\n\
-    fi\n\
-    # Drop to vpn9-control-plane user\n\
-    exec gosu vpn9-control-plane "$@"\n\
-else\n\
-    exec "$@"\n\
-fi' > /entrypoint.sh && chmod +x /entrypoint.sh
-
-# Install su-exec for privilege dropping
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gosu \
-    && rm -rf /var/lib/apt/lists/*
+# No custom entrypoint; the container runs as a fixed non-root user
 
 # Don't switch to non-root user here - let entrypoint handle it
 # USER vpn9-control-plane
@@ -91,7 +81,7 @@ EXPOSE 50051
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD pgrep -f vpn9-control-plane || exit 1
+    CMD pidof vpn9-control-plane || exit 1
 
 # Set environment variables
 ENV RUST_LOG=info
@@ -100,8 +90,6 @@ ENV VPN9_UPDATE_PATH=/opt/vpn9/updates
 ENV VPN9_TLS_CERT_PATH=/opt/vpn9/certs/server.crt
 ENV VPN9_TLS_KEY_PATH=/opt/vpn9/certs/server.key
 
-# Set entrypoint
-ENTRYPOINT ["/entrypoint.sh"]
-
-# Run the control plane
-CMD ["vpn9-control-plane"]
+# Drop privileges and set entrypoint to the binary
+USER 10001:10001
+ENTRYPOINT ["vpn9-control-plane"]

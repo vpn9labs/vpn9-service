@@ -7,7 +7,6 @@ VPN9 is a high-performance, secure VPN infrastructure built in Rust, featuring a
 ### Control Plane
 The control plane manages VPN state and exposes a single TLS gRPC interface:
 - **gRPC (TLS)**: agent subscription, update checks, and streaming updates
-- **WireGuard**: interface setup and peer lifecycle
 - **Device Registry (Redis)**: read-only sync of allowed devices and metadata
 - **Config via env**: sane defaults with runtime validation
 
@@ -18,7 +17,6 @@ The control plane manages VPN state and exposes a single TLS gRPC interface:
 - `update_manager.rs` - Update checks, chunked downloads, SHA256 verification
 - `server.rs` - TLS gRPC server + builder
 - `device_registry.rs` - Redis-backed device registry consumer
-- `wireguard_manager.rs` - WireGuard interface and peer management
 - `lib.rs` - Public API and in-memory key/agent registry
 
 ### VPN9 Agent
@@ -165,10 +163,6 @@ Complete Pipeline:
 | `VPN9_TLS_CERT_PATH` | TLS certificate (PEM) | `./certs/server.crt` |
 | `VPN9_TLS_KEY_PATH` | TLS private key (PEM) | `./certs/server.key` |
 | `VPN9_TLS_DOMAIN` | Expected SNI/server name | `vpn9-control-plane` |
-| `VPN9_WIREGUARD_INTERFACE` | WireGuard interface name | `wg0` |
-| `VPN9_WIREGUARD_PRIVATE_KEY` | Base64 private key (optional) | generated/empty |
-| `VPN9_WIREGUARD_LISTEN_PORT` | WireGuard UDP port | `51820` |
-| `VPN9_WIREGUARD_INTERFACE_ADDRESS` | CIDR for interface | `10.0.0.1/24` |
 | `REDIS_URL` / `KREDIS_URL` | Redis URL for DeviceRegistry | `redis://127.0.0.1:6379/1` |
 | `VPN9_REGISTRY_POLL_INTERVAL_SECS` | Registry poll interval | `10` |
 
@@ -194,7 +188,6 @@ vpn9-service/
 │   │   ├── service.rs      # gRPC service (ControlPlane)
 │   │   ├── agent_manager.rs # Agent subscription handling
 │   │   ├── update_manager.rs # Update distribution
-│   │   ├── wireguard_manager.rs # WireGuard interface/peers
 │   │   ├── device_registry.rs # Redis DeviceRegistry consumer
 │   │   └── server.rs       # TLS server setup
 │   └── Dockerfile
@@ -238,7 +231,7 @@ grpcurl -cacert certs/ca.crt -authority vpn9-control-plane \
 - **TLS 1.3**: gRPC secured with server-side TLS (self-signed CA in dev)
 - **Device Authorization**: Read-only from Redis DeviceRegistry (`vpn9:devices:active` + `vpn9:device:<id>`)
 - **SHA256 checksums**: Update integrity verification
-- **WireGuard**: Interface + peers managed by control plane
+- **WireGuard**: Interface + peers managed by agents
 - **Rust memory safety**: `rustls`, `tonic`, `tokio` throughout
 
 ## 📚 Device Registry
