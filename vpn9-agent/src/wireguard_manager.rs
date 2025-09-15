@@ -157,8 +157,8 @@ impl WireGuardManager {
         if let Some(ref wg_api) = *api_guard {
             info!("Applying WireGuard configuration...");
 
-            // Parse the interface address with CIDR notation
-            let interface_addr_with_cidr = format!("{}/24", config.interface_address);
+            // Parse the interface address with CIDR notation (switched to /8)
+            let interface_addr_with_cidr = format!("{}/8", config.interface_address);
             let interface_addr = IpAddrMask::from_str(&interface_addr_with_cidr)?;
 
             let interface_config = InterfaceConfiguration {
