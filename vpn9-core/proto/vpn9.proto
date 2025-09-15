@@ -19,8 +19,6 @@ package VPN9;
 
 service ControlPlane {
   rpc SubscribeAgent(AgentSubscriptionRequest) returns (stream AgentSubscriptionMessage) {}
-  rpc CheckForUpdate(UpdateCheckRequest) returns (UpdateCheckResponse) {}
-  rpc DownloadUpdate(DownloadUpdateRequest) returns (stream UpdateChunk) {}
 }
 
 // ------------------------------------------------------------
@@ -91,30 +89,4 @@ message AgentSubscriptionMessage {
   }
 }
 
-// ------------------------------------------------------------
-// Update Service
-// ------------------------------------------------------------
-
-message UpdateCheckRequest {
-  string current_version = 1;
-  string agent_id = 2;
-}
-
-message UpdateCheckResponse {
-  bool update_available = 1;
-  string latest_version = 2;
-  string download_url = 3;
-  string checksum = 4;
-  int64 file_size = 5;
-}
-
-message DownloadUpdateRequest {
-  string version = 1;
-  string agent_id = 2;
-}
-
-message UpdateChunk {
-  bytes data = 1;
-  int64 offset = 2;
-  bool is_final = 3;
-}
+// (Update RPCs removed; agent auto-update disabled)

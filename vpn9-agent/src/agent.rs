@@ -11,7 +11,6 @@ use vpn9_core::control_plane::{AgentSubscriptionRequest, agent_subscription_mess
 
 use crate::runtime_security::RuntimeSecurity;
 use crate::secure_system_info::{OsInfo, collect_os_info};
-use crate::secure_update_manager::SecureUpdateManager;
 use crate::version::get_version;
 use crate::wireguard_manager::WireGuardManager;
 
@@ -107,9 +106,6 @@ impl VPN9Agent {
         let os_info = collect_os_info().await;
         self.subscribe_to_control_plane(&mut client, &os_info)
             .await?;
-
-        // Start update checker in background
-        self.start_update_checker().await?;
 
         // Run main agent loop
         self.run_main_loop().await
@@ -252,20 +248,6 @@ impl VPN9Agent {
         });
 
         info!("Subscription established with control plane");
-        Ok(())
-    }
-
-    async fn start_update_checker(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let update_client = self.create_control_plane_client().await?;
-        let mut update_manager = SecureUpdateManager::new(update_client)
-            .with_version(self.agent_version.clone())
-            .with_update_interval(Duration::from_secs(300)); // Check every 5 minutes
-
-        tokio::spawn(async move {
-            update_manager.start_update_checker().await;
-        });
-
-        info!("Secure update checker started - checking every 5 minutes");
         Ok(())
     }
 

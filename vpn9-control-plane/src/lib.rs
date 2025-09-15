@@ -2,7 +2,6 @@
 //!
 //! A modular control plane implementation for the VPN9 system that provides:
 //! - Agent registration and management
-//! - Update distribution and management
 //! - TLS-secured gRPC communication
 //! - Agent session tracking and key exchange metadata
 //!
@@ -12,7 +11,6 @@
 //! - `config`: Configuration management and environment variable handling
 //! - `service`: Main gRPC service implementation
 //! - `agent_manager`: Agent registration and subscription handling
-//! - `update_manager`: Update distribution and version management
 //! - `key_manager`: Agent session tracking and port assignment
 //! - `server`: TLS server setup and startup logic
 //!
@@ -44,7 +42,6 @@ pub mod config;
 pub mod device_registry;
 pub mod server;
 pub mod service;
-pub mod update_manager;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -257,7 +254,6 @@ pub use agent_manager::{AgentManager, AgentStats};
 pub use config::Config;
 pub use server::{TlsServer, TlsServerBuilder};
 pub use service::VPN9ControlPlane;
-pub use update_manager::UpdateManager;
 
 /// Current version of the VPN9 Control Plane
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -268,8 +264,6 @@ pub mod defaults {
     pub const BIND_ADDRESS: &str = "0.0.0.0:50051";
     /// Default version string
     pub const VERSION: &str = "1.0.0";
-    /// Default update path
-    pub const UPDATE_PATH: &str = "./updates/";
     /// Default TLS certificate path
     pub const TLS_CERT_PATH: &str = "./certs/server.crt";
     /// Default TLS key path

@@ -6,7 +6,7 @@ VPN9 is a high-performance, secure VPN infrastructure built in Rust, featuring a
 
 ### Control Plane
 The control plane manages VPN state and exposes a single TLS gRPC interface:
-- **gRPC (TLS)**: agent subscription, update checks, and streaming updates
+- **gRPC (TLS)**: agent subscription and health checks
 - **Device Registry (Redis)**: read-only sync of allowed devices and metadata
 - **Config via env**: sane defaults with runtime validation
 
@@ -14,7 +14,6 @@ The control plane manages VPN state and exposes a single TLS gRPC interface:
 - `config.rs` - Env-driven configuration and validation
 - `service.rs` - gRPC `ControlPlane` implementation
 - `agent_manager.rs` - Agent subscription and lifecycle
-- `update_manager.rs` - Update checks, chunked downloads, SHA256 verification
 - `server.rs` - TLS gRPC server + builder
 - `device_registry.rs` - Redis-backed device registry consumer
 - `lib.rs` - Public API and in-memory key/agent registry
@@ -24,7 +23,6 @@ Lightweight agent that runs on POP servers and client endpoints, handling:
 - Control plane communication
 - WireGuard tunnel management
 - System integration
-- Automatic updates
 
 The agent connects only over gRPC (no REST endpoint).
 
@@ -159,7 +157,6 @@ Complete Pipeline:
 |----------|-------------|---------|
 | `VPN9_BIND_ADDRESS` | gRPC bind address | `0.0.0.0:50051` |
 | `VPN9_CONTROL_PLANE_VERSION` | Reported version string | `1.0.0` |
-| `VPN9_UPDATE_PATH` | Directory for update artifacts | `./updates/` |
 | `VPN9_TLS_CERT_PATH` | TLS certificate (PEM) | `./certs/server.crt` |
 | `VPN9_TLS_KEY_PATH` | TLS private key (PEM) | `./certs/server.key` |
 | `VPN9_TLS_DOMAIN` | Expected SNI/server name | `vpn9-control-plane` |
@@ -187,7 +184,6 @@ vpn9-service/
 │   │   ├── config.rs       # Configuration management
 │   │   ├── service.rs      # gRPC service (ControlPlane)
 │   │   ├── agent_manager.rs # Agent subscription handling
-│   │   ├── update_manager.rs # Update distribution
 │   │   ├── device_registry.rs # Redis DeviceRegistry consumer
 │   │   └── server.rs       # TLS server setup
 │   └── Dockerfile
@@ -216,21 +212,19 @@ cargo check --workspace
 ### Testing TLS Connection
 
 ```bash
-# Using grpcurl with the dev CA and correct service path
+# Using grpcurl with the dev CA to verify TLS and list services
 grpcurl -cacert certs/ca.crt -authority vpn9-control-plane \
-  -d '{"agent_id":"test","current_version":"1.0.0"}' \
-  localhost:50051 VPN9.ControlPlane/CheckForUpdate
+  localhost:50051 list
 
-# Alternatively (dev only), skip verification
-# grpcurl -insecure -d '{"agent_id":"test","current_version":"1.0.0"}' \
-#   localhost:50051 VPN9.ControlPlane/CheckForUpdate
+# Describe the ControlPlane service
+grpcurl -cacert certs/ca.crt -authority vpn9-control-plane \
+  localhost:50051 describe VPN9.ControlPlane
 ```
 
 ## 🛡️ Security
 
 - **TLS 1.3**: gRPC secured with server-side TLS (self-signed CA in dev)
 - **Device Authorization**: Read-only from Redis DeviceRegistry (`vpn9:devices:active` + `vpn9:device:<id>`)
-- **SHA256 checksums**: Update integrity verification
 - **WireGuard**: Interface + peers managed by agents
 - **Rust memory safety**: `rustls`, `tonic`, `tokio` throughout
 

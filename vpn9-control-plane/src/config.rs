@@ -8,8 +8,6 @@ pub struct Config {
     pub bind_address: SocketAddr,
     /// Current version of the control plane
     pub current_version: String,
-    /// Path to the directory containing update files
-    pub update_path: String,
     /// Path to the TLS certificate file
     pub tls_cert_path: String,
     /// Path to the TLS private key file
@@ -35,11 +33,6 @@ impl Config {
             "1.0.0".to_string()
         });
 
-        let update_path = std::env::var("VPN9_UPDATE_PATH").unwrap_or_else(|_| {
-            info!("VPN9_UPDATE_PATH not set, using default: ./updates/");
-            "./updates/".to_string()
-        });
-
         let tls_cert_path = std::env::var("VPN9_TLS_CERT_PATH")
             .unwrap_or_else(|_| "./certs/server.crt".to_string());
 
@@ -63,7 +56,6 @@ impl Config {
         info!(
             bind_address = %bind_address,
             current_version = %current_version,
-            update_path = %update_path,
             tls_cert_path = %tls_cert_path,
             tls_key_path = %tls_key_path,
             tls_domain = %tls_domain,
@@ -76,7 +68,6 @@ impl Config {
         Ok(Config {
             bind_address,
             current_version,
-            update_path,
             tls_cert_path,
             tls_key_path,
             tls_domain,
@@ -96,17 +87,6 @@ impl Config {
             return Err(format!("TLS key file not found: {}", self.tls_key_path).into());
         }
 
-        // Create update directory if it doesn't exist
-        if !std::path::Path::new(&self.update_path).exists() {
-            std::fs::create_dir_all(&self.update_path).map_err(|e| {
-                format!(
-                    "Failed to create update directory {}: {}",
-                    self.update_path, e
-                )
-            })?;
-            info!(update_path = %self.update_path, "Created update directory");
-        }
-
         info!("Configuration validation completed successfully");
         Ok(())
     }
@@ -117,7 +97,6 @@ impl Default for Config {
         Config {
             bind_address: "0.0.0.0:50051".parse().unwrap(),
             current_version: "1.0.0".to_string(),
-            update_path: "./updates/".to_string(),
             tls_cert_path: "./certs/server.crt".to_string(),
             tls_key_path: "./certs/server.key".to_string(),
             tls_domain: "vpn9-control-plane".to_string(),

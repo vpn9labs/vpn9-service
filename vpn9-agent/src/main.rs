@@ -35,13 +35,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("  Build Time: {}", version_info.build_time);
     info!("Configuration:");
     info!("  Control Plane: {}", config.control_plane_url);
-    info!(
-        "  Update Check Interval: {}s",
-        config.update_check_interval_secs
-    );
     info!("  Heartbeat Interval: {}s", config.heartbeat_interval_secs);
     info!("Security Features:");
-    info!("  ✅ Memory-only updates (no disk writes)");
     info!("  ✅ Runtime memory locking");
     info!("  ✅ Core dump prevention");
     info!("  ✅ Environment sanitization");

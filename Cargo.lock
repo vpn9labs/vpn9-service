@@ -2403,7 +2403,6 @@ dependencies = [
  "reqwest",
  "rustls",
  "serde",
- "sha2",
  "signal-hook",
  "sysinfo",
  "thiserror",

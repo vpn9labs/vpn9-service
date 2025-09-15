@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 pub struct AgentConfig {
     pub control_plane_url: String,
     pub agent_version: String,
-    pub update_check_interval_secs: u64,
     pub heartbeat_interval_secs: u64,
     pub max_retry_attempts: u32,
     pub retry_delay_secs: u64,
@@ -18,8 +17,7 @@ impl Default for AgentConfig {
         Self {
             control_plane_url: "http://[::1]:50051".to_string(),
             agent_version: get_version(),
-            update_check_interval_secs: 300, // 5 minutes
-            heartbeat_interval_secs: 60,     // 1 minute
+            heartbeat_interval_secs: 60, // 1 minute
             max_retry_attempts: 3,
             retry_delay_secs: 5,
         }
@@ -27,10 +25,6 @@ impl Default for AgentConfig {
 }
 
 impl AgentConfig {
-    pub fn update_check_interval(&self) -> Duration {
-        Duration::from_secs(self.update_check_interval_secs)
-    }
-
     pub fn heartbeat_interval(&self) -> Duration {
         Duration::from_secs(self.heartbeat_interval_secs)
     }
@@ -48,12 +42,6 @@ impl AgentConfig {
 
         if let Ok(version) = std::env::var("VPN9_AGENT_VERSION") {
             config.agent_version = version;
-        }
-
-        if let Ok(interval) = std::env::var("VPN9_UPDATE_CHECK_INTERVAL") {
-            if let Ok(secs) = interval.parse::<u64>() {
-                config.update_check_interval_secs = secs;
-            }
         }
 
         if let Ok(interval) = std::env::var("VPN9_HEARTBEAT_INTERVAL") {
@@ -84,10 +72,6 @@ impl AgentConfig {
 
         if self.agent_version.is_empty() {
             return Err("Agent version cannot be empty".to_string());
-        }
-
-        if self.update_check_interval_secs == 0 {
-            return Err("Update check interval must be greater than 0".to_string());
         }
 
         if self.heartbeat_interval_secs == 0 {
