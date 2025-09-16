@@ -21,21 +21,33 @@ pub struct VPN9Agent {
     heartbeat_interval: Duration,
     runtime_security: RuntimeSecurity,
     wireguard_manager: Arc<WireGuardManager>,
-    wg_private_key: Option<String>,
-    wg_public_key: Option<String>,
 }
 
 impl VPN9Agent {
     pub fn new(control_plane_url: String) -> Self {
+        fn derive_stable_agent_id() -> Uuid {
+            if let Ok(s) = std::env::var("VPN9_AGENT_ID") {
+                if let Ok(id) = Uuid::parse_str(s.trim()) {
+                    return id;
+                }
+            }
+            if let Ok(machine_id) = fs::read_to_string("/etc/machine-id") {
+                let name = format!("vpn9-agent:{}", machine_id.trim());
+                return Uuid::new_v5(&Uuid::NAMESPACE_OID, name.as_bytes());
+            }
+            if let Ok(hn) = std::env::var("HOSTNAME") {
+                let name = format!("vpn9-agent:{}", hn.trim());
+                return Uuid::new_v5(&Uuid::NAMESPACE_DNS, name.as_bytes());
+            }
+            Uuid::new_v4()
+        }
         Self {
-            agent_id: Uuid::new_v4(),
+            agent_id: derive_stable_agent_id(),
             control_plane_url,
             agent_version: get_version(),
             heartbeat_interval: Duration::from_secs(60),
             runtime_security: RuntimeSecurity::new(),
             wireguard_manager: Arc::new(WireGuardManager::new()),
-            wg_private_key: None,
-            wg_public_key: None,
         }
     }
 
@@ -87,18 +99,6 @@ impl VPN9Agent {
             warn!("Continuing with reduced security guarantees...");
         }
 
-        // Generate WireGuard keys locally
-        info!("Generating WireGuard keys locally...");
-        let (private_key, public_key) = WireGuardManager::generate_keypair()?;
-        self.wg_private_key = Some(private_key.clone());
-        self.wg_public_key = Some(public_key.clone());
-        info!("Generated WireGuard public key: {}", public_key);
-        debug!(
-            "Private key length: {}, Public key length: {}",
-            private_key.len(),
-            public_key.len()
-        );
-
         // Connect to control plane
         let mut client = self.create_control_plane_client().await?;
 
@@ -116,12 +116,6 @@ impl VPN9Agent {
         client: &mut ControlPlaneClient<tonic::transport::Channel>,
         os_info: &OsInfo,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let wg_public_key = self.wg_public_key.clone().unwrap_or_default();
-        debug!(
-            "Sending WireGuard public key in subscription: {}",
-            &wg_public_key
-        );
-
         let request = tonic::Request::new(AgentSubscriptionRequest {
             agent_id: self.agent_id.to_string(),
             hostname: os_info.hostname.clone(),
@@ -133,7 +127,7 @@ impl VPN9Agent {
                 .unwrap_or_default(),
             cpu_count: os_info.cpu_count as i32,
             total_memory_mb: os_info.total_memory_mb as i32,
-            wg_public_key,
+            wg_public_key: String::new(),
         });
 
         info!("Subscribing to control plane...");
@@ -141,8 +135,6 @@ impl VPN9Agent {
 
         // Handle the registration response and maintain subscription
         let wg_manager = self.wireguard_manager.clone();
-        let agent_private_key = self.wg_private_key.clone();
-        let agent_public_key = self.wg_public_key.clone();
         tokio::spawn(async move {
             while let Some(message) = response_stream.message().await.unwrap_or(None) {
                 if let Some(msg) = message.message {
@@ -152,18 +144,9 @@ impl VPN9Agent {
                             info!("  Status: {}", registration.status);
                             info!("  Control Plane Public Key: {}", registration.wg_public_key);
                             info!("  WireGuard Listen Port: {}", registration.wg_listen_port);
-                            debug!(
-                                "  Agent Private Key available: {}",
-                                agent_private_key.is_some()
-                            );
-                            debug!(
-                                "  Agent Public Key available: {}",
-                                agent_public_key.is_some()
-                            );
-
-                            // Configure WireGuard with our locally generated private key
-                            let private_key = agent_private_key.clone().unwrap();
-                            let public_key = agent_public_key.clone().unwrap();
+                            // Configure WireGuard with private key received from control plane
+                            let private_key = registration.wg_private_key.clone();
+                            let public_key = registration.wg_public_key.clone();
 
                             match wg_manager.configure_wireguard(
                                 private_key,

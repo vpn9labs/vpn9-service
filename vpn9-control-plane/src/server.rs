@@ -6,6 +6,7 @@ use vpn9_core::control_plane::control_plane_server::ControlPlaneServer;
 
 use crate::config::Config;
 use crate::device_registry::DeviceRegistry;
+use crate::keystore::StrongBoxKeystore;
 use crate::service::VPN9ControlPlane;
 
 /// TLS server configuration and startup logic
@@ -70,7 +71,18 @@ impl TlsServer {
             .start_polling(self.config.registry_poll_interval_secs);
 
         // Create the control plane service with registry
-        let control_plane = VPN9ControlPlane::new_with_registry(self.config.clone(), registry);
+        let keystore = std::sync::Arc::new(
+            StrongBoxKeystore::from_env(&self.config.redis_url)
+                .await
+                .map_err(|e| format!("Failed to initialize keystore: {e}"))?,
+        );
+
+        // Create the control plane service with registry + keystore
+        let control_plane = VPN9ControlPlane::new_with_registry_and_keystore(
+            self.config.clone(),
+            registry,
+            keystore,
+        );
 
         info!("VPN9 Control Plane server starting...");
         let server = match Server::builder().tls_config(tls_config) {

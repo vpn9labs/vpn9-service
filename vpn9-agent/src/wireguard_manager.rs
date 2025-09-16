@@ -61,8 +61,6 @@ impl WireGuardManager {
         listen_port: u32,
     ) -> Result<(), Box<dyn std::error::Error>> {
         info!("🔧 Configuring WireGuard interface...");
-        debug!("Private key (base64): {}", &private_key);
-        debug!("Public key (base64): {}", &public_key);
 
         // Determine interface name based on OS
         let interface_name = self.get_interface_name();

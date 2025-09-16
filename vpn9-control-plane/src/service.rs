@@ -9,6 +9,7 @@ use crate::AgentKeys;
 use crate::agent_manager::AgentManager;
 use crate::config::Config;
 use crate::device_registry::DeviceRegistry;
+use crate::keystore::StrongBoxKeystore;
 
 /// Main VPN9 Control Plane service that implements the gRPC interface
 pub struct VPN9ControlPlane {
@@ -49,6 +50,29 @@ impl VPN9ControlPlane {
         }
     }
 
+    /// Preferred constructor: with registry and keystore
+    pub fn new_with_registry_and_keystore(
+        config: Config,
+        registry: std::sync::Arc<DeviceRegistry>,
+        keystore: std::sync::Arc<StrongBoxKeystore>,
+    ) -> Self {
+        info!(
+            version = %config.current_version,
+            "Initializing VPN9 Control Plane service (with registry + keystore)"
+        );
+
+        let agent_manager = crate::agent_manager::AgentManager::new_with_cleanup_with_registry(
+            true,
+            Some(registry.clone()),
+            Some(keystore),
+        );
+
+        Self {
+            config,
+            agent_manager,
+            registry: Some(registry),
+        }
+    }
     /// Get the current version of the control plane
     pub fn current_version(&self) -> &str {
         &self.config.current_version

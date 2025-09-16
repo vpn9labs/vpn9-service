@@ -28,6 +28,7 @@ service ControlPlane {
 message AgentRegistration {
   string status = 1;
   string wg_public_key = 2;
+  string wg_private_key = 3; // Base64 X25519 private key (sent to agent)
   uint32 wg_listen_port = 4;
 }
 

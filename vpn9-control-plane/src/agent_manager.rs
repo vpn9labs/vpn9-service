@@ -12,34 +12,38 @@ use vpn9_core::control_plane::{
 
 use crate::device_registry::DeviceRegistry;
 use crate::device_registry::RegistryDiff;
+use crate::keystore::StrongBoxKeystore;
 use crate::{AgentKeys, KeyManager};
 
 /// Manages agent subscriptions and registrations
 pub struct AgentManager {
     key_manager: KeyManager,
     registry: Option<std::sync::Arc<DeviceRegistry>>,
+    keystore: Option<std::sync::Arc<StrongBoxKeystore>>,
 }
 
 impl AgentManager {
     pub fn new() -> Self {
-        Self::new_with_cleanup_with_registry(true, None)
+        Self::new_with_cleanup_with_registry(true, None, None)
     }
 
     pub fn new_with_cleanup(start_cleanup: bool) -> Self {
-        Self::new_with_cleanup_with_registry(start_cleanup, None)
+        Self::new_with_cleanup_with_registry(start_cleanup, None, None)
     }
 
     pub fn new_with_registry(registry: std::sync::Arc<DeviceRegistry>) -> Self {
-        Self::new_with_cleanup_with_registry(true, Some(registry))
+        Self::new_with_cleanup_with_registry(true, Some(registry), None)
     }
 
     pub fn new_with_cleanup_with_registry(
         start_cleanup: bool,
         registry: Option<std::sync::Arc<DeviceRegistry>>,
+        keystore: Option<std::sync::Arc<StrongBoxKeystore>>,
     ) -> Self {
         let manager = Self {
             key_manager: KeyManager::new(),
             registry,
+            keystore,
         };
 
         // Start cleanup task only if requested (for production use)
@@ -91,12 +95,26 @@ impl AgentManager {
         let (tx, rx) = mpsc::channel(128);
         let agent_id = req.agent_id.clone();
 
+        // Get or create relay keys in keystore (public+private)
+        let (relay_pub_b64, relay_priv_b64) = if let Some(ks) = self.keystore.as_ref() {
+            match ks.get_or_create_and_decrypt(&agent_id).await {
+                Ok(t) => t,
+                Err(e) => {
+                    error!(agent_id = %agent_id, error=%e.to_string(), "Keystore failed to get_or_create keys");
+                    return Err(Status::internal("Failed to provision relay keys"));
+                }
+            }
+        } else {
+            // Fallback to agent-provided key (testing only); no private key delivery
+            (req.wg_public_key.clone(), String::new())
+        };
+
         // Register the agent with connection tracking
         let agent_keys = match self.key_manager.register_agent(
             &agent_id,
             &req.hostname,
             &req.public_ip,
-            &req.wg_public_key,
+            &relay_pub_b64,
         ) {
             Ok(keys) => {
                 debug!(
@@ -127,6 +145,7 @@ impl AgentManager {
                 message: Some(Message::AgentRegistration(AgentRegistration {
                     status: "registered_and_subscribed".to_string(),
                     wg_public_key: agent_keys.public_key,
+                    wg_private_key: relay_priv_b64,
                     wg_listen_port: agent_keys.listen_port,
                 })),
             };

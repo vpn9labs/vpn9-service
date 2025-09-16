@@ -20,5 +20,13 @@ sha2 = "0.10"
 vpn9-core = { path = "../vpn9-core" }
 redis = { version = "0.32.5", features = ["tokio-comp", "connection-manager"] }
 
+base64 = "0.22"
+secrecy = "0.8"
+zeroize = "1.7"
+strong-box = "0.5.1"
+x25519-dalek = "2.0.1"
+chrono = { version = "0.4", features = ["clock", "serde", "std"] }
+
+
 [dev-dependencies]
 tempfile = "3.0"

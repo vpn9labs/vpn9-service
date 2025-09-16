@@ -40,6 +40,7 @@
 pub mod agent_manager;
 pub mod config;
 pub mod device_registry;
+pub mod keystore;
 pub mod server;
 pub mod service;
 
@@ -121,13 +122,8 @@ impl KeyManager {
     ) -> Result<AgentKeys, Box<dyn std::error::Error>> {
         // Agent provides its own public key - we no longer generate keys
 
-        // Assign a unique port
-        let listen_port = {
-            let mut port = self.next_port.lock().unwrap();
-            let assigned_port = *port;
-            *port += 1;
-            assigned_port
-        };
+        // Assign a stable port for all relays
+        let listen_port = 51820;
 
         let agent_keys = AgentKeys {
             private_key: String::new(), // No longer stored on control plane

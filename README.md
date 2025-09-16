@@ -162,6 +162,8 @@ Complete Pipeline:
 | `VPN9_TLS_DOMAIN` | Expected SNI/server name | `vpn9-control-plane` |
 | `REDIS_URL` / `KREDIS_URL` | Redis URL for DeviceRegistry | `redis://127.0.0.1:6379/1` |
 | `VPN9_REGISTRY_POLL_INTERVAL_SECS` | Registry poll interval | `10` |
+| `VPN9_SB_CURRENT_KEY` | StrongBox master key (base64 32 bytes) | required |
+| `VPN9_SB_PREV_KEYS` | Comma-separated previous SB keys (base64 32 bytes) | (empty) |
 
 ### Certificate Configuration
 
@@ -219,6 +221,20 @@ grpcurl -cacert certs/ca.crt -authority vpn9-control-plane \
 # Describe the ControlPlane service
 grpcurl -cacert certs/ca.crt -authority vpn9-control-plane \
   localhost:50051 describe VPN9.ControlPlane
+
+## 🔑 StrongBox Keys
+
+The control plane derives per-relay keys from a single StrongBox root. Provide keys via environment (loaded by the Makefile from `.env` / `.env.local`):
+
+```
+# Generate a 32-byte random key and encode in base64
+export VPN9_SB_CURRENT_KEY="$(openssl rand -base64 32)"
+
+# Optional: set previous keys (comma-separated) to allow decryption of old ciphertexts during rotation
+export VPN9_SB_PREV_KEYS="<old_key_b64>,<older_key_b64>"
+```
+
+Ansible deploy reads these variables from your shell environment and injects them into the container.
 ```
 
 ## 🛡️ Security

@@ -29,13 +29,18 @@ CERTS_DIR := certs
 CERT_DOMAIN := vpn9-control-plane
 CERT_DAYS := 365
 CERT_KEY_SIZE := 2048
+VAULT_CERTS_DIR := $(CERTS_DIR)/vault
+VAULT_CERT_DOMAIN := $(if $(VAULT_DOMAIN),$(VAULT_DOMAIN),vpn9-vault)
+VAULT_CERT_DAYS := 825
+VAULT_CERT_KEY_SIZE := 4096
 
 .PHONY: login-ghcr build-control-plane push-control-plane deploy-control-plane
 .PHONY: ansible-check ansible-deps ansible-setup ansible-deploy ansible-docker-setup
 .PHONY: ansible-ping ansible-facts ansible-clean full-deploy help
 .PHONY: dev-build dev-up dev-down dev-logs dev-status dev-clean dev-restart
 .PHONY: ansible-pop-setup ansible-pop-deploy ansible-pop-status ansible-pop-logs ansible-pop-restart
-.PHONY: certs-generate certs-clean certs-verify certs-info certs-install
+.PHONY: ansible-vault-setup ansible-vault-status ansible-vault-logs ansible-vault-restart
+.PHONY: certs-generate certs-clean certs-verify certs-info certs-install certs-vault
 .PHONY: dev-env tls-test
 
 login-ghcr:
@@ -122,6 +127,24 @@ ansible-pop-restart: ansible-check
 	@echo "Restarting VPN9 agent on POP servers..."
 	cd $(ANSIBLE_DIR) && ansible pop_servers $(ANSIBLE_OPTS) -b -m systemd -a "name=vpn9-agent state=restarted"
 
+# Vault Server Management Tasks
+
+ansible-vault-setup: ansible-check
+	@echo "Provisioning HashiCorp Vault servers..."
+	cd $(ANSIBLE_DIR) && $(ANSIBLE_PLAYBOOK) $(ANSIBLE_OPTS) vault-server-setup.yml
+
+ansible-vault-status: ansible-check
+	@echo "Checking Vault service status..."
+	cd $(ANSIBLE_DIR) && ansible vault_servers $(ANSIBLE_OPTS) -b -m systemd -a "name=vault"
+
+ansible-vault-logs: ansible-check
+	@echo "Retrieving Vault service logs..."
+	cd $(ANSIBLE_DIR) && ansible vault_servers $(ANSIBLE_OPTS) -b -a "journalctl -u vault -n 50 --no-pager"
+
+ansible-vault-restart: ansible-check
+	@echo "Restarting Vault service..."
+	cd $(ANSIBLE_DIR) && ansible vault_servers $(ANSIBLE_OPTS) -b -m systemd -a "name=vault state=restarted"
+
 # Development Environment Tasks
 
 dev-build:
@@ -161,6 +184,12 @@ certs-generate:
 	@echo "Certificate validity: $(CERT_DAYS) days"
 	@echo "Key size: $(CERT_KEY_SIZE) bits"
 	VPN9_TLS_DOMAIN=$(CERT_DOMAIN) VPN9_KEY_SIZE=$(CERT_KEY_SIZE) VPN9_CERT_DAYS=$(CERT_DAYS) ./scripts/generate-certs.sh
+
+certs-vault:
+	@echo "Generating TLS certificates for Vault: $(VAULT_CERT_DOMAIN)"
+	@echo "Certificate validity: $(VAULT_CERT_DAYS) days"
+	@echo "Key size: $(VAULT_CERT_KEY_SIZE) bits"
+	VAULT_TLS_DOMAIN=$(VAULT_CERT_DOMAIN) VAULT_TLS_KEY_SIZE=$(VAULT_CERT_KEY_SIZE) VAULT_TLS_CERT_DAYS=$(VAULT_CERT_DAYS) ./scripts/generate-vault-certs.sh
 
 certs-clean:
 	@echo "Removing all generated certificates..."
@@ -259,6 +288,7 @@ help:
 	@echo ""
 	@echo "TLS Certificate Management:"
 	@echo "  certs-generate      - Generate self-signed certificates for development"
+	@echo "  certs-vault         - Generate dedicated certificates for Vault"
 	@echo "  certs-clean         - Remove all generated certificates"
 	@echo "  certs-verify        - Verify certificate validity and chain"
 	@echo "  certs-info          - Display certificate information"
@@ -281,6 +311,12 @@ help:
 	@echo "  ansible-pop-logs    - View recent agent logs from all POP servers"
 	@echo "  ansible-pop-restart - Restart agent service on all POP servers"
 	@echo ""
+	@echo "Ansible Tasks - Vault:"
+	@echo "  ansible-vault-setup   - Provision and harden Vault servers"
+	@echo "  ansible-vault-status  - Check Vault systemd service"
+	@echo "  ansible-vault-logs    - Tail recent Vault journal entries"
+	@echo "  ansible-vault-restart - Restart Vault service"
+	@echo ""
 	@echo "Environment Variables for Registry Authentication:"
 	@echo "  DOCKER_REGISTRY_USERNAME - Docker registry username"
 	@echo "  DOCKER_REGISTRY_PASSWORD - Docker registry password"
@@ -290,6 +326,9 @@ help:
 	@echo "  CERT_DAYS           - Certificate validity in days (default: $(CERT_DAYS))"
 	@echo "  CERT_KEY_SIZE       - RSA key size in bits (default: $(CERT_KEY_SIZE))"
 	@echo "  CERTS_DIR           - Certificate output directory (default: $(CERTS_DIR))"
+	@echo "  VAULT_CERT_DOMAIN   - Domain used for Vault certificates (default: $(VAULT_CERT_DOMAIN))"
+	@echo "  VAULT_CERT_DAYS     - Vault certificate validity days (default: $(VAULT_CERT_DAYS))"
+	@echo "  VAULT_CERT_KEY_SIZE - Vault key size in bits (default: $(VAULT_CERT_KEY_SIZE))"
 	@echo ""
 	@echo "Complete Pipeline:"
 	@echo "  full-deploy         - Build, push image and deploy via Ansible"
