@@ -1,12 +1,14 @@
 use std::fs;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use vpn9_core::control_plane::control_plane_server::ControlPlaneServer;
 
 use crate::config::Config;
 use crate::device_registry::DeviceRegistry;
 use crate::keystore::StrongBoxKeystore;
+use crate::lease_manager::LeaseManager;
+use crate::preferred_relay::PreferredRelayDecryptor;
 use crate::service::VPN9ControlPlane;
 
 /// TLS server configuration and startup logic
@@ -77,11 +79,34 @@ impl TlsServer {
                 .map_err(|e| format!("Failed to initialize keystore: {e}"))?,
         );
 
-        // Create the control plane service with registry + keystore
+        // Initialize lease manager for device session tokens
+        let lease_manager = std::sync::Arc::new(
+            LeaseManager::new(
+                &self.config.redis_url,
+                std::time::Duration::from_secs(self.config.lease_ttl_secs),
+            )
+            .await
+            .map_err(|e| format!("Failed to initialize lease manager: {e}"))?,
+        );
+
+        let preferred_relay = match self.config.device_pref_secret.as_ref() {
+            Some(secret) => match PreferredRelayDecryptor::new(secret) {
+                Ok(decryptor) => Some(std::sync::Arc::new(decryptor)),
+                Err(err) => {
+                    warn!(error = %err, "Preferred relay hints disabled: decryptor init failed");
+                    None
+                }
+            },
+            None => None,
+        };
+
+        // Create the control plane service with registry + keystore + leases
         let control_plane = VPN9ControlPlane::new_with_registry_and_keystore(
             self.config.clone(),
             registry,
             keystore,
+            lease_manager,
+            preferred_relay,
         );
 
         info!("VPN9 Control Plane server starting...");

@@ -3,13 +3,17 @@ use tonic::{Request, Response, Status};
 use tracing::info;
 
 use vpn9_core::control_plane::control_plane_server::ControlPlane;
-use vpn9_core::control_plane::{AgentSubscriptionMessage, AgentSubscriptionRequest};
+use vpn9_core::control_plane::{
+    AgentSubscriptionMessage, AgentSubscriptionRequest, HealthAck, HealthResponse,
+};
 
 use crate::AgentKeys;
 use crate::agent_manager::AgentManager;
 use crate::config::Config;
 use crate::device_registry::DeviceRegistry;
 use crate::keystore::StrongBoxKeystore;
+use crate::lease_manager::LeaseManager;
+use crate::preferred_relay::PreferredRelayDecryptor;
 
 /// Main VPN9 Control Plane service that implements the gRPC interface
 pub struct VPN9ControlPlane {
@@ -55,6 +59,8 @@ impl VPN9ControlPlane {
         config: Config,
         registry: std::sync::Arc<DeviceRegistry>,
         keystore: std::sync::Arc<StrongBoxKeystore>,
+        lease_manager: std::sync::Arc<LeaseManager>,
+        preferred_relay: Option<std::sync::Arc<PreferredRelayDecryptor>>,
     ) -> Self {
         info!(
             version = %config.current_version,
@@ -65,6 +71,8 @@ impl VPN9ControlPlane {
             true,
             Some(registry.clone()),
             Some(keystore),
+            Some(lease_manager),
+            preferred_relay,
         );
 
         Self {
@@ -112,6 +120,18 @@ impl ControlPlane for VPN9ControlPlane {
             info!("Device registry available; seeding peers on subscribe");
         }
         self.agent_manager.subscribe_agent(request).await
+    }
+
+    async fn report_health(
+        &self,
+        request: Request<HealthResponse>,
+    ) -> Result<Response<HealthAck>, Status> {
+        let body = request.into_inner();
+        let accepted = self
+            .agent_manager
+            .record_health_response(&body.agent_id, body.timestamp, body.status)
+            .await;
+        Ok(Response::new(HealthAck { accepted }))
     }
 }
 

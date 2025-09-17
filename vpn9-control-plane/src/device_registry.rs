@@ -1,9 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use redis::RedisError;
 use redis::aio::ConnectionManager;
 use tokio::sync::{RwLock, broadcast};
 use tracing::{debug, error, info, warn};
+
+const PREFERRED_RELAY_KEY_PREFIX: &str = "vpn9:device-pref";
 
 #[derive(Debug, Clone)]
 pub struct DeviceRecord {
@@ -309,6 +312,47 @@ impl DeviceRegistry {
 
     pub async fn list_all_devices(&self) -> Vec<DeviceRecord> {
         self.by_id.read().await.values().cloned().collect()
+    }
+
+    pub async fn consume_preferred_relay_hint(
+        &self,
+        device_id: &str,
+    ) -> Result<Option<String>, RedisError> {
+        let key = format!("{PREFERRED_RELAY_KEY_PREFIX}:{device_id}");
+        let mut conn = self.conn.clone();
+        let attempt: redis::RedisResult<Option<String>> =
+            redis::cmd("GETDEL").arg(&key).query_async(&mut conn).await;
+
+        match attempt {
+            Ok(value) => Ok(clean_optional_string(value)),
+            Err(err) if is_unknown_command(&err) => {
+                let mut fallback_conn = self.conn.clone();
+                let value: Option<String> = redis::cmd("GET")
+                    .arg(&key)
+                    .query_async(&mut fallback_conn)
+                    .await?;
+                if value.is_some() {
+                    let _: () = redis::cmd("DEL")
+                        .arg(&key)
+                        .query_async(&mut fallback_conn)
+                        .await?;
+                }
+                Ok(clean_optional_string(value))
+            }
+            Err(err) => Err(err),
+        }
+    }
+}
+
+fn is_unknown_command(err: &RedisError) -> bool {
+    matches!(err.kind(), redis::ErrorKind::ResponseError)
+        && err.to_string().to_lowercase().contains("unknown command")
+}
+
+fn clean_optional_string(value: Option<String>) -> Option<String> {
+    match value {
+        Some(s) if s.is_empty() => None,
+        other => other,
     }
 }
 

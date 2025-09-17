@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,7 +8,11 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use vpn9_core::control_plane::control_plane_client::ControlPlaneClient;
-use vpn9_core::control_plane::{AgentSubscriptionRequest, agent_subscription_message::Message};
+use vpn9_core::control_plane::{
+    AgentSubscriptionRequest, HealthResponse, agent_subscription_message::Message,
+};
+
+use tokio::sync::{Mutex, RwLock};
 
 use crate::runtime_security::RuntimeSecurity;
 use crate::secure_system_info::{OsInfo, collect_os_info};
@@ -21,6 +26,13 @@ pub struct VPN9Agent {
     heartbeat_interval: Duration,
     runtime_security: RuntimeSecurity,
     wireguard_manager: Arc<WireGuardManager>,
+    lease_state: Arc<RwLock<HashMap<String, LeaseInfo>>>,
+}
+
+#[derive(Debug, Clone)]
+struct LeaseInfo {
+    nonce: Vec<u8>,
+    version: u64,
 }
 
 impl VPN9Agent {
@@ -48,6 +60,7 @@ impl VPN9Agent {
             heartbeat_interval: Duration::from_secs(60),
             runtime_security: RuntimeSecurity::new(),
             wireguard_manager: Arc::new(WireGuardManager::new()),
+            lease_state: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -91,7 +104,10 @@ impl VPN9Agent {
     }
 
     pub async fn start(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        info!("Starting VPN9 Agent version {}", self.agent_version);
+        info!(
+            "Starting VPN9 Agent version {} with agent_id {}",
+            self.agent_version, self.agent_id
+        );
 
         // Initialize secure runtime environment
         if let Err(e) = self.runtime_security.initialize_secure_runtime() {
@@ -99,15 +115,25 @@ impl VPN9Agent {
             warn!("Continuing with reduced security guarantees...");
         }
 
-        // Connect to control plane
-        let mut client = self.create_control_plane_client().await?;
-
-        // Collect system info and subscribe to control plane
         let os_info = collect_os_info().await;
-        self.subscribe_to_control_plane(&mut client, &os_info)
-            .await?;
+        loop {
+            match self.run_once(&os_info).await {
+                Ok(_) => return Ok(()),
+                Err(err) => {
+                    error!(
+                        ?err,
+                        "Control plane session ended with error; reconnecting soon"
+                    );
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+            }
+        }
+    }
 
-        // Run main agent loop
+    async fn run_once(&self, os_info: &OsInfo) -> Result<(), Box<dyn std::error::Error>> {
+        let mut client = self.create_control_plane_client().await?;
+        self.subscribe_to_control_plane(&mut client, os_info)
+            .await?;
         self.run_main_loop().await
     }
 
@@ -131,10 +157,14 @@ impl VPN9Agent {
         });
 
         info!("Subscribing to control plane...");
+        info!("Using agent_id={}", self.agent_id);
         let mut response_stream = client.subscribe_agent(request).await?.into_inner();
 
         // Handle the registration response and maintain subscription
         let wg_manager = self.wireguard_manager.clone();
+        let lease_state = self.lease_state.clone();
+        let health_client = Arc::new(Mutex::new(client.clone()));
+        let health_client_task = health_client.clone();
         tokio::spawn(async move {
             while let Some(message) = response_stream.message().await.unwrap_or(None) {
                 if let Some(msg) = message.message {
@@ -175,6 +205,18 @@ impl VPN9Agent {
                             info!("📡 Peer registration request received:");
                             info!("  Agent ID: {}", peer_req.agent_id);
                             info!("  Public Key: {}", peer_req.public_key);
+                            info!("  Lease Version: {}", peer_req.lease_version);
+
+                            {
+                                let mut leases = lease_state.write().await;
+                                leases.insert(
+                                    peer_req.public_key.clone(),
+                                    LeaseInfo {
+                                        nonce: peer_req.lease_nonce.clone(),
+                                        version: peer_req.lease_version,
+                                    },
+                                );
+                            }
 
                             // Add the peer to our WireGuard interface using provided allowed_ips
                             let allowed_ips = if !peer_req.allowed_ips.is_empty() {
@@ -198,23 +240,123 @@ impl VPN9Agent {
                                 "🗑️ Peer removal request received for: {}",
                                 peer_rm.public_key
                             );
-                            match wg_manager.remove_peer(&peer_rm.public_key) {
-                                Ok(_) => info!("✅ Peer removed from WireGuard interface"),
-                                Err(e) => error!("❌ Failed to remove peer: {}", e),
+                            let mut should_remove = true;
+                            {
+                                let mut leases = lease_state.write().await;
+                                if let Some(current) = leases.get(&peer_rm.public_key) {
+                                    if !peer_rm.expected_nonce.is_empty()
+                                        && current.nonce != peer_rm.expected_nonce
+                                    {
+                                        warn!(
+                                            "⚠️ Lease nonce mismatch; keeping peer {} (expected {:?}, have {:?})",
+                                            peer_rm.public_key,
+                                            peer_rm.expected_nonce,
+                                            current.nonce
+                                        );
+                                        should_remove = false;
+                                    } else {
+                                        leases.remove(&peer_rm.public_key);
+                                    }
+                                } else if !peer_rm.expected_nonce.is_empty() {
+                                    warn!(
+                                        "⚠️ Removal requested with nonce but peer {} not tracked locally",
+                                        peer_rm.public_key
+                                    );
+                                }
+                            }
+
+                            if should_remove {
+                                match wg_manager.remove_peer(&peer_rm.public_key) {
+                                    Ok(_) => info!("✅ Peer removed from WireGuard interface"),
+                                    Err(e) => error!("❌ Failed to remove peer: {}", e),
+                                }
+                            } else {
+                                info!(
+                                    "ℹ️ Skipping removal for {} due to nonce mismatch",
+                                    peer_rm.public_key
+                                );
+                            }
+                        }
+                        Message::LeaseUpdate(update) => {
+                            info!(
+                                "🔁 Lease update received for {} (version {})",
+                                update.public_key, update.lease_version
+                            );
+                            let mut should_remove = false;
+                            let mut should_store = true;
+                            {
+                                let mut leases = lease_state.write().await;
+                                if let Some(current) = leases.get(&update.public_key) {
+                                    if update.lease_version <= current.version
+                                        && current.nonce == update.lease_nonce
+                                    {
+                                        debug!(
+                                            "Lease update version {} not newer than cached {}; ignoring",
+                                            update.lease_version, current.version
+                                        );
+                                        should_store = false;
+                                    } else if current.nonce != update.lease_nonce {
+                                        should_remove = true;
+                                        leases.remove(&update.public_key);
+                                        should_store = false;
+                                    } else {
+                                        leases.insert(
+                                            update.public_key.clone(),
+                                            LeaseInfo {
+                                                nonce: update.lease_nonce.clone(),
+                                                version: update.lease_version,
+                                            },
+                                        );
+                                    }
+                                } else {
+                                    leases.insert(
+                                        update.public_key.clone(),
+                                        LeaseInfo {
+                                            nonce: update.lease_nonce.clone(),
+                                            version: update.lease_version,
+                                        },
+                                    );
+                                }
+                            }
+
+                            if should_remove {
+                                info!(
+                                    "🔒 Lease nonce rotated elsewhere; removing local peer {}",
+                                    update.public_key
+                                );
+                                match wg_manager.remove_peer(&update.public_key) {
+                                    Ok(_) => info!("✅ Peer removed after lease update"),
+                                    Err(e) => {
+                                        error!("❌ Failed to remove peer after lease update: {}", e)
+                                    }
+                                }
+                            } else if should_store {
+                                info!(
+                                    "Lease metadata refreshed for {} (version {})",
+                                    update.public_key, update.lease_version
+                                );
                             }
                         }
                         Message::HealthCheck(health_check) => {
                             debug!(
-                                "💓 Health check received from control plane (timestamp: {})",
-                                health_check.timestamp
+                                "💓 Health check received from control plane (timestamp: {}, agent_id={})",
+                                health_check.timestamp, health_check.agent_id
                             );
 
-                            // Send health response back (in a real implementation, this would be sent back through the stream)
-                            // For now, we just acknowledge it locally
-                            debug!("✅ Responding to health check");
+                            let response = HealthResponse {
+                                agent_id: health_check.agent_id.clone(),
+                                timestamp: health_check.timestamp,
+                                status: "ok".to_string(),
+                            };
+
+                            let mut client_guard = health_client_task.lock().await;
+                            if let Err(err) = client_guard.report_health(response).await {
+                                warn!("⚠️ Failed to report health to control plane: {}", err);
+                            } else {
+                                debug!("✅ Health response sent to control plane");
+                            }
                         }
                         Message::HealthResponse(_health_response) => {
-                            // This would be received if we sent a health check to the control plane
                             debug!("💚 Health response received from control plane");
                         }
                         Message::AgentDisconnect(disconnect) => {
@@ -231,6 +373,7 @@ impl VPN9Agent {
         });
 
         info!("Subscription established with control plane");
+        info!("Agent {} now streaming", self.agent_id);
         Ok(())
     }
 

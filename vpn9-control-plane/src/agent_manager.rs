@@ -1,18 +1,23 @@
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc;
-use tokio::time::{interval, sleep};
+use tokio::sync::{RwLock, mpsc};
+use tokio::time::interval;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 use tracing::{debug, error, info, warn};
 
 use vpn9_core::control_plane::{
-    AgentRegistration, AgentSubscriptionMessage, AgentSubscriptionRequest, HealthCheck, PeerAdd,
-    PeerRemove, agent_subscription_message::Message,
+    AgentRegistration, AgentSubscriptionMessage, AgentSubscriptionRequest, HealthCheck,
+    LeaseUpdate, PeerAdd, PeerRemove, agent_subscription_message::Message,
 };
 
-use crate::device_registry::DeviceRegistry;
 use crate::device_registry::RegistryDiff;
+use crate::device_registry::{DeviceRecord, DeviceRegistry};
 use crate::keystore::StrongBoxKeystore;
+use crate::lease_manager::{LeaseManager, LeaseState};
+use crate::preferred_relay::PreferredRelayDecryptor;
 use crate::{AgentKeys, KeyManager};
 
 /// Manages agent subscriptions and registrations
@@ -20,30 +25,165 @@ pub struct AgentManager {
     key_manager: KeyManager,
     registry: Option<std::sync::Arc<DeviceRegistry>>,
     keystore: Option<std::sync::Arc<StrongBoxKeystore>>,
+    lease_manager: Option<std::sync::Arc<LeaseManager>>,
+    lease_cache: std::sync::Arc<RwLock<HashMap<String, LeaseState>>>,
+    preferred_relay: Option<std::sync::Arc<PreferredRelayDecryptor>>,
+    preferred_owner_cache: std::sync::Arc<RwLock<HashMap<String, String>>>,
+    health_trackers: std::sync::Arc<RwLock<HashMap<String, std::sync::Arc<AtomicU32>>>>,
 }
 
 impl AgentManager {
+    fn owner_for(pubkey_b64: &str, active_agents: &[String]) -> Option<String> {
+        if active_agents.is_empty() {
+            return None;
+        }
+        let mut best: Option<(u128, &String)> = None;
+        for agent in active_agents {
+            let mut hasher = Sha256::new();
+            hasher.update(pubkey_b64.as_bytes());
+            hasher.update(b"|");
+            hasher.update(agent.as_bytes());
+            let digest = hasher.finalize();
+            // Use first 16 bytes as u128 for better spread
+            let mut arr = [0u8; 16];
+            arr.copy_from_slice(&digest[..16]);
+            let score = u128::from_be_bytes(arr);
+            match best {
+                None => best = Some((score, agent)),
+                Some((bscore, _)) if score > bscore => best = Some((score, agent)),
+                _ => {}
+            }
+        }
+        best.map(|(_, a)| a.clone())
+    }
+
+    async fn resolve_owner_for_device(
+        registry: Option<&DeviceRegistry>,
+        decryptor: Option<&PreferredRelayDecryptor>,
+        preferred_owner_cache: &std::sync::Arc<RwLock<HashMap<String, String>>>,
+        device: &DeviceRecord,
+        active_agents: &[String],
+    ) -> Option<String> {
+        if let Some(cached) = preferred_owner_cache.read().await.get(&device.id).cloned() {
+            return Some(cached);
+        }
+
+        if let (Some(registry), Some(decryptor)) = (registry, decryptor) {
+            match registry.consume_preferred_relay_hint(&device.id).await {
+                Ok(Some(payload)) => match decryptor.decrypt(&payload) {
+                    Ok(relay_id) => {
+                        if !active_agents.contains(&relay_id) {
+                            warn!(
+                                device_id = %device.id,
+                                preferred_relay = %relay_id,
+                                "Preferred relay not currently active"
+                            );
+                        }
+                        {
+                            let mut cache = preferred_owner_cache.write().await;
+                            cache.insert(device.id.clone(), relay_id.clone());
+                        }
+                        return Some(relay_id);
+                    }
+                    Err(err) => {
+                        warn!(
+                            device_id = %device.id,
+                            error = %err,
+                            "Failed to decrypt preferred relay hint"
+                        );
+                    }
+                },
+                Ok(None) => {}
+                Err(err) => {
+                    warn!(
+                        device_id = %device.id,
+                        error = %err,
+                        "Failed to consume preferred relay hint"
+                    );
+                }
+            }
+        }
+
+        AgentManager::owner_for(&device.public_key, active_agents)
+    }
+
+    fn peer_add_message(
+        agent_id: &str,
+        dev: &DeviceRecord,
+        lease: &LeaseState,
+    ) -> AgentSubscriptionMessage {
+        AgentSubscriptionMessage {
+            agent_id: agent_id.to_string(),
+            message: Some(Message::PeerAdd(PeerAdd {
+                agent_id: agent_id.to_string(),
+                public_key: dev.public_key.clone(),
+                allowed_ips: dev.allowed_ips.clone(),
+                ipv6: dev.ipv6.clone(),
+                lease_nonce: lease.nonce.clone(),
+                lease_version: lease.version,
+            })),
+        }
+    }
+
+    fn peer_remove_message(
+        agent_id: &str,
+        public_key: &str,
+        expected_nonce: Vec<u8>,
+    ) -> AgentSubscriptionMessage {
+        AgentSubscriptionMessage {
+            agent_id: agent_id.to_string(),
+            message: Some(Message::PeerRemove(PeerRemove {
+                agent_id: agent_id.to_string(),
+                public_key: public_key.to_string(),
+                expected_nonce,
+            })),
+        }
+    }
+
+    fn lease_update_message(
+        agent_id: &str,
+        public_key: &str,
+        lease: &LeaseState,
+    ) -> AgentSubscriptionMessage {
+        AgentSubscriptionMessage {
+            agent_id: agent_id.to_string(),
+            message: Some(Message::LeaseUpdate(LeaseUpdate {
+                agent_id: agent_id.to_string(),
+                public_key: public_key.to_string(),
+                lease_nonce: lease.nonce.clone(),
+                lease_version: lease.version,
+            })),
+        }
+    }
+
     pub fn new() -> Self {
-        Self::new_with_cleanup_with_registry(true, None, None)
+        Self::new_with_cleanup_with_registry(true, None, None, None, None)
     }
 
     pub fn new_with_cleanup(start_cleanup: bool) -> Self {
-        Self::new_with_cleanup_with_registry(start_cleanup, None, None)
+        Self::new_with_cleanup_with_registry(start_cleanup, None, None, None, None)
     }
 
     pub fn new_with_registry(registry: std::sync::Arc<DeviceRegistry>) -> Self {
-        Self::new_with_cleanup_with_registry(true, Some(registry), None)
+        Self::new_with_cleanup_with_registry(true, Some(registry), None, None, None)
     }
 
     pub fn new_with_cleanup_with_registry(
         start_cleanup: bool,
         registry: Option<std::sync::Arc<DeviceRegistry>>,
         keystore: Option<std::sync::Arc<StrongBoxKeystore>>,
+        lease_manager: Option<std::sync::Arc<LeaseManager>>,
+        preferred_relay: Option<std::sync::Arc<PreferredRelayDecryptor>>,
     ) -> Self {
         let manager = Self {
             key_manager: KeyManager::new(),
             registry,
             keystore,
+            lease_manager,
+            lease_cache: std::sync::Arc::new(RwLock::new(HashMap::new())),
+            preferred_relay,
+            preferred_owner_cache: std::sync::Arc::new(RwLock::new(HashMap::new())),
+            health_trackers: std::sync::Arc::new(RwLock::new(HashMap::new())),
         };
 
         // Start cleanup task only if requested (for production use)
@@ -136,8 +276,20 @@ impl AgentManager {
             }
         };
 
+        let health_counter = {
+            let counter = std::sync::Arc::new(AtomicU32::new(0));
+            let mut trackers = self.health_trackers.write().await;
+            trackers.insert(agent_id.clone(), counter.clone());
+            counter
+        };
+        let health_trackers = self.health_trackers.clone();
         let key_manager_clone = self.key_manager.clone();
         let registry = self.registry.clone();
+        let lease_manager = self.lease_manager.clone();
+        let lease_cache = self.lease_cache.clone();
+        let preferred_relay = self.preferred_relay.clone();
+        let preferred_owner_cache = self.preferred_owner_cache.clone();
+        let health_counter_clone = health_counter.clone();
         tokio::spawn(async move {
             // Send initial registration confirmation with WireGuard configuration
             let subscription_msg = AgentSubscriptionMessage {
@@ -176,18 +328,123 @@ impl AgentManager {
                     );
                     for chunk in devices.chunks(SEED_CHUNK_SIZE) {
                         for dev in chunk.iter() {
-                            let msg = AgentSubscriptionMessage {
-                                agent_id: agent_id.clone(),
-                                message: Some(Message::PeerAdd(PeerAdd {
-                                    agent_id: agent_id.clone(),
-                                    public_key: dev.public_key.clone(),
-                                    allowed_ips: dev.allowed_ips.clone(),
-                                    ipv6: dev.ipv6.clone(),
-                                })),
-                            };
-                            if tx.send(Ok(msg)).await.is_err() {
-                                warn!(agent_id = %agent_id, "Client disconnected while seeding peers");
-                                break;
+                            let active = key_manager_clone.list_agents();
+                            let owner = AgentManager::resolve_owner_for_device(
+                                registry.as_deref(),
+                                preferred_relay.as_deref(),
+                                &preferred_owner_cache,
+                                dev,
+                                &active,
+                            )
+                            .await;
+                            if owner.as_deref() == Some(&agent_id) {
+                                if let Some(ref lm) = lease_manager {
+                                    match lm.acquire(&dev.id).await {
+                                        Ok(outcome) => {
+                                            {
+                                                let mut cache = lease_cache.write().await;
+                                                cache.insert(
+                                                    dev.public_key.clone(),
+                                                    outcome.lease.clone(),
+                                                );
+                                            }
+                                            info!(
+                                                agent_id = %agent_id,
+                                                device_pub = %dev.public_key,
+                                                lease_version = outcome.lease.version,
+                                                "Ownership match during seed: issuing PeerAdd with lease"
+                                            );
+                                            let msg = AgentManager::peer_add_message(
+                                                &agent_id,
+                                                dev,
+                                                &outcome.lease,
+                                            );
+                                            if tx.send(Ok(msg)).await.is_err() {
+                                                warn!(agent_id = %agent_id, "Client disconnected while seeding peers");
+                                                break;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!(
+                                                agent_id = %agent_id,
+                                                device_pub = %dev.public_key,
+                                                error = %e,
+                                                "Failed to acquire lease; sending PeerRemove"
+                                            );
+                                            let msg = AgentManager::peer_remove_message(
+                                                &agent_id,
+                                                &dev.public_key,
+                                                Vec::new(),
+                                            );
+                                            let _ = tx.send(Ok(msg)).await;
+                                        }
+                                    }
+                                } else {
+                                    // Fallback for tests without lease manager: provide zeroed lease metadata
+                                    warn!(
+                                        agent_id = %agent_id,
+                                        device_pub = %dev.public_key,
+                                        "Lease manager unavailable during seed; emitting placeholder PeerAdd"
+                                    );
+                                    let placeholder = LeaseState {
+                                        version: 0,
+                                        nonce: Vec::new(),
+                                    };
+                                    let msg = AgentManager::peer_add_message(
+                                        &agent_id,
+                                        dev,
+                                        &placeholder,
+                                    );
+                                    if tx.send(Ok(msg)).await.is_err() {
+                                        warn!(agent_id = %agent_id, "Client disconnected while seeding peers");
+                                        break;
+                                    }
+                                }
+                            } else {
+                                let lease_state = if let Some(ref lm) = lease_manager {
+                                    match lm.current(&dev.id).await {
+                                        Ok(Some(state)) => Some(state),
+                                        Ok(None) => None,
+                                        Err(err) => {
+                                            warn!(
+                                                agent_id = %agent_id,
+                                                device_pub = %dev.public_key,
+                                                error = %err,
+                                                "Failed reading lease state during seed"
+                                            );
+                                            None
+                                        }
+                                    }
+                                } else {
+                                    None
+                                };
+                                let expected_nonce = lease_state
+                                    .as_ref()
+                                    .map(|state| state.nonce.clone())
+                                    .unwrap_or_default();
+                                info!(
+                                    agent_id = %agent_id,
+                                    device_pub = %dev.public_key,
+                                    owner = ?owner,
+                                    "Not owner during seed: sending PeerRemove"
+                                );
+                                if let Some(state) = lease_state {
+                                    let update = AgentManager::lease_update_message(
+                                        &agent_id,
+                                        &dev.public_key,
+                                        &state,
+                                    );
+                                    let _ = tx.send(Ok(update)).await;
+                                }
+                                let msg = AgentManager::peer_remove_message(
+                                    &agent_id,
+                                    &dev.public_key,
+                                    expected_nonce,
+                                );
+                                if tx.send(Ok(msg)).await.is_err() {
+                                    warn!(agent_id = %agent_id, "Client disconnected while seeding peers");
+                                    break;
+                                }
                             }
                         }
                         // Yield between chunks to give the client time to drain
@@ -200,7 +457,7 @@ impl AgentManager {
 
             // Start health monitoring
             let mut health_interval = interval(Duration::from_secs(30)); // Health check every 30 seconds
-            let mut missed_health_checks = 0;
+            let mut drift_interval = interval(Duration::from_secs(120)); // Drift cleanup every 2 minutes
             const MAX_MISSED_CHECKS: u32 = 3;
 
             // Subscribe to registry diffs, if available
@@ -229,14 +486,119 @@ impl AgentManager {
                             break;
                         }
 
-                        missed_health_checks += 1;
-                        if missed_health_checks > MAX_MISSED_CHECKS {
+                        let missed = health_counter_clone.fetch_add(1, Ordering::Relaxed) + 1;
+                        if missed > MAX_MISSED_CHECKS {
                             error!(
                                 agent_id = %agent_id,
-                                missed_checks = missed_health_checks,
+                                missed_checks = missed,
                                 "Agent failed health checks, removing connection"
                             );
                             break;
+                        }
+                    }
+
+                    // Periodic drift cleanup: remove peers not owned by this relay
+                    _ = drift_interval.tick() => {
+                        if let Some(reg) = registry.as_ref() {
+                            let decryptor = preferred_relay.as_ref().map(|arc| arc.as_ref());
+                            let devices = reg.list_all_devices().await;
+                            for dev in devices {
+                                let active = key_manager_clone.list_agents();
+                                let owner = AgentManager::resolve_owner_for_device(
+                                    Some(reg.as_ref()),
+                                    decryptor,
+                                    &preferred_owner_cache,
+                                    &dev,
+                                    &active,
+                                )
+                                .await;
+                                if owner.as_deref() == Some(&agent_id) {
+                                    if let Some(ref lm) = lease_manager {
+                                        let cached = {
+                                            let cache = lease_cache.read().await;
+                                            cache.get(&dev.public_key).cloned()
+                                        };
+                                        let mut lease_outcome = None;
+                                        if let Some(state) = cached {
+                                            match lm.refresh(&dev.id, &state).await {
+                                                Ok(true) => {
+                                                    // refreshed successfully, nothing to send
+                                                }
+                                                Ok(false) => {
+                                                    info!(agent_id = %agent_id, device_pub = %dev.public_key, "Lease refresh mismatch; rotating lease");
+                                                    match lm.acquire(&dev.id).await {
+                                                        Ok(outcome) => lease_outcome = Some(outcome),
+                                                        Err(err) => warn!(agent_id = %agent_id, device_pub = %dev.public_key, error = %err, "Failed to reacquire lease during drift"),
+                                                    }
+                                                }
+                                                Err(err) => {
+                                                    warn!(agent_id = %agent_id, device_pub = %dev.public_key, error = %err, "Failed to refresh lease during drift; reacquiring");
+                                                    match lm.acquire(&dev.id).await {
+                                                        Ok(outcome) => lease_outcome = Some(outcome),
+                                                        Err(err2) => warn!(agent_id = %agent_id, device_pub = %dev.public_key, error = %err2, "Failed to reacquire lease after refresh error"),
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            match lm.acquire(&dev.id).await {
+                                                Ok(outcome) => lease_outcome = Some(outcome),
+                                                Err(err) => warn!(agent_id = %agent_id, device_pub = %dev.public_key, error = %err, "Failed to acquire lease during drift"),
+                                            }
+                                        }
+
+                                        if let Some(outcome) = lease_outcome {
+                                            {
+                                                let mut cache = lease_cache.write().await;
+                                                cache.insert(dev.public_key.clone(), outcome.lease.clone());
+                                            }
+                                            let msg = AgentManager::peer_add_message(&agent_id, &dev, &outcome.lease);
+                                            if tx.send(Ok(msg)).await.is_err() {
+                                                warn!(agent_id = %agent_id, "Client disconnected while sending drift PeerAdd");
+                                                break;
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    let lease_state = {
+                                        let cached = {
+                                            let cache = lease_cache.read().await;
+                                            cache.get(&dev.public_key).cloned()
+                                        };
+                                        if let Some(state) = cached {
+                                            Some(state)
+                                        } else if let Some(ref lm) = lease_manager {
+                                            match lm.current(&dev.id).await {
+                                                Ok(Some(state)) => Some(state),
+                                                Ok(None) => None,
+                                                Err(err) => {
+                                                    warn!(agent_id = %agent_id, device_pub = %dev.public_key, error = %err, "Failed to read lease during drift cleanup");
+                                                    None
+                                                }
+                                            }
+                                        } else {
+                                            None
+                                        }
+                                    };
+                                    let expected_nonce = lease_state
+                                        .as_ref()
+                                        .map(|state| state.nonce.clone())
+                                        .unwrap_or_default();
+                                    let msg = AgentManager::peer_remove_message(
+                                        &agent_id,
+                                        &dev.public_key,
+                                        expected_nonce,
+                                    );
+                                    if let Some(state) = lease_state {
+                                        let update = AgentManager::lease_update_message(
+                                            &agent_id,
+                                            &dev.public_key,
+                                            &state,
+                                        );
+                                        let _ = tx.send(Ok(update)).await;
+                                    }
+                                    let _ = tx.send(Ok(msg)).await;
+                                }
+                            }
                         }
                     }
 
@@ -249,47 +611,110 @@ impl AgentManager {
                     } => {
                         match diff {
                             RegistryDiff::Added(dev) => {
-                                let msg = AgentSubscriptionMessage {
-                                    agent_id: agent_id.clone(),
-                                    message: Some(Message::PeerAdd(PeerAdd {
-                                        agent_id: agent_id.clone(),
-                                        public_key: dev.public_key.clone(),
-                                        allowed_ips: dev.allowed_ips.clone(),
-                                        ipv6: dev.ipv6.clone(),
-                                    })),
-                                };
-                                if tx.send(Ok(msg)).await.is_err() {
-                                    warn!(agent_id = %agent_id, "Client disconnected while sending device add");
-                                    break;
+                                let active = key_manager_clone.list_agents();
+                                let owner = AgentManager::resolve_owner_for_device(
+                                    registry.as_deref(),
+                                    preferred_relay.as_deref(),
+                                    &preferred_owner_cache,
+                                    &dev,
+                                    &active,
+                                )
+                                .await;
+                                if owner.as_deref() == Some(&agent_id) {
+                                    if let Some(ref lm) = lease_manager {
+                                        match lm.acquire(&dev.id).await {
+                                            Ok(outcome) => {
+                                                {
+                                                    let mut cache = lease_cache.write().await;
+                                                    cache.insert(dev.public_key.clone(), outcome.lease.clone());
+                                                }
+                                                info!(agent_id = %agent_id, device_pub = %dev.public_key, lease_version = outcome.lease.version, "Ownership match on diff: sending PeerAdd with lease");
+                                                let msg = AgentManager::peer_add_message(&agent_id, &dev, &outcome.lease);
+                                                if tx.send(Ok(msg)).await.is_err() {
+                                                    warn!(agent_id = %agent_id, "Client disconnected while sending device add");
+                                                    break;
+                                                }
+                                            }
+                                            Err(err) => {
+                                                error!(agent_id = %agent_id, device_pub = %dev.public_key, error = %err, "Failed to acquire lease for added device; issuing PeerRemove");
+                                                let msg = AgentManager::peer_remove_message(&agent_id, &dev.public_key, Vec::new());
+                                                let _ = tx.send(Ok(msg)).await;
+                                            }
+                                        }
+                                    } else {
+                                        let placeholder = LeaseState { version: 0, nonce: Vec::new() };
+                                        let msg = AgentManager::peer_add_message(&agent_id, &dev, &placeholder);
+                                        if tx.send(Ok(msg)).await.is_err() {
+                                            warn!(agent_id = %agent_id, "Client disconnected while sending device add");
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    info!(agent_id = %agent_id, device_pub = %dev.public_key, owner = ?owner, "Not owner on diff: sending PeerRemove");
+                                    let lease_state = {
+                                        let cached = {
+                                            let cache = lease_cache.read().await;
+                                            cache.get(&dev.public_key).cloned()
+                                        };
+                                        if let Some(state) = cached {
+                                            Some(state)
+                                        } else if let Some(ref lm) = lease_manager {
+                                            match lm.current(&dev.id).await {
+                                                Ok(Some(state)) => Some(state),
+                                                _ => None,
+                                            }
+                                        } else {
+                                            None
+                                        }
+                                    };
+                                    let expected_nonce = lease_state
+                                        .as_ref()
+                                        .map(|state| state.nonce.clone())
+                                        .unwrap_or_default();
+                                    if let Some(state) = lease_state {
+                                        let update = AgentManager::lease_update_message(
+                                            &agent_id,
+                                            &dev.public_key,
+                                            &state,
+                                        );
+                                        let _ = tx.send(Ok(update)).await;
+                                    }
+                                    let msg = AgentManager::peer_remove_message(&agent_id, &dev.public_key, expected_nonce);
+                                    if tx.send(Ok(msg)).await.is_err() {
+                                        warn!(agent_id = %agent_id, "Client disconnected while sending device add");
+                                        break;
+                                    }
                                 }
                             }
-                            RegistryDiff::Removed { public_key, .. } => {
-                                let msg = AgentSubscriptionMessage {
-                                    agent_id: agent_id.clone(),
-                                    message: Some(Message::PeerRemove(
-                                        PeerRemove {
-                                        agent_id: agent_id.clone(),
-                                        public_key,
-                                        }
-                                    )),
+                            RegistryDiff::Removed { public_key, device_id } => {
+                                let cached = {
+                                    let mut cache = lease_cache.write().await;
+                                    cache.remove(&public_key)
                                 };
+                                {
+                                    let mut owner_cache = preferred_owner_cache.write().await;
+                                    owner_cache.remove(&device_id);
+                                }
+                                if let Some(ref lm) = lease_manager {
+                                    if let Some(state) = cached.clone() {
+                                        if let Err(err) = lm.release(&device_id, &state).await {
+                                            warn!(device_pub = %public_key, error = %err, "Failed to release lease for removed device");
+                                        }
+                                    } else if let Ok(Some(state)) = lm.current(&device_id).await {
+                                        if let Err(err) = lm.release(&device_id, &state).await {
+                                            warn!(device_pub = %public_key, error = %err, "Failed to release current lease for removed device");
+                                        }
+                                    }
+                                }
+
+                                let expected_nonce = cached.map(|state| state.nonce).unwrap_or_default();
+                                let msg = AgentManager::peer_remove_message(&agent_id, &public_key, expected_nonce);
                                 if tx.send(Ok(msg)).await.is_err() {
                                     warn!(agent_id = %agent_id, "Client disconnected while sending device remove");
                                     break;
                                 }
                             }
                         }
-                    }
-
-                    // Simulate receiving health responses (in real implementation, this would be from agent)
-                    _ = sleep(Duration::from_secs(35)) => {
-                        // Update activity to keep connection alive
-                        key_manager_clone.update_agent_activity(&agent_id);
-                        missed_health_checks = 0; // Reset counter on activity
-                        debug!(
-                            agent_id = %agent_id,
-                            "Agent activity detected, resetting health check counter"
-                        );
                     }
                 }
             }
@@ -300,6 +725,10 @@ impl AgentManager {
                 "Agent subscription ended, cleaning up connection"
             );
             key_manager_clone.remove_agent_keys(&agent_id);
+            {
+                let mut trackers = health_trackers.write().await;
+                trackers.remove(&agent_id);
+            }
         });
 
         Ok(Response::new(ReceiverStream::new(rx)))
@@ -329,6 +758,39 @@ impl AgentManager {
             total_agents: total_count,
             active_agents: active_count,
             registered_agents: active_agents,
+        }
+    }
+
+    pub async fn record_health_response(
+        &self,
+        agent_id: &str,
+        timestamp: i64,
+        status: String,
+    ) -> bool {
+        let tracker = {
+            let trackers = self.health_trackers.read().await;
+            trackers.get(agent_id).cloned()
+        };
+
+        match tracker {
+            Some(counter) => {
+                counter.store(0, Ordering::Relaxed);
+                self.key_manager.update_agent_activity(agent_id);
+                debug!(
+                    agent_id = %agent_id,
+                    status = %status,
+                    timestamp,
+                    "Health response recorded"
+                );
+                true
+            }
+            None => {
+                warn!(
+                    agent_id = %agent_id,
+                    "Health response received for unknown agent"
+                );
+                false
+            }
         }
     }
 }
@@ -363,5 +825,65 @@ mod tests {
         let agent_manager = AgentManager::new_with_cleanup(false);
         let agents = agent_manager.list_registered_agents();
         assert!(agents.is_empty());
+    }
+
+    #[test]
+    fn test_owner_for_is_deterministic() {
+        let pubkey = "FxDknS+tXYeK478okCCqnbnA01W8P5n+nYEs3y9RelE=";
+        let a = vec![
+            "relay-a".to_string(),
+            "relay-b".to_string(),
+            "relay-c".to_string(),
+        ];
+        let b = vec![
+            "relay-c".to_string(),
+            "relay-b".to_string(),
+            "relay-a".to_string(),
+        ];
+        let owner_a = AgentManager::owner_for(pubkey, &a).expect("owner");
+        let owner_b = AgentManager::owner_for(pubkey, &b).expect("owner");
+        assert_eq!(owner_a, owner_b, "Owner should be independent of order");
+    }
+
+    #[test]
+    fn test_owner_for_changes_when_active_set_changes() {
+        let pubkey = "FxDknS+tXYeK478okCCqnbnA01W8P5n+nYEs3y9RelE=";
+        let active = vec![
+            "relay-a".to_string(),
+            "relay-b".to_string(),
+            "relay-c".to_string(),
+        ];
+        let owner1 = AgentManager::owner_for(pubkey, &active).expect("owner");
+        let reduced: Vec<String> = active.into_iter().filter(|id| id != &owner1).collect();
+        let owner2 = AgentManager::owner_for(pubkey, &reduced).expect("owner after change");
+        assert_ne!(
+            owner1, owner2,
+            "Owner should change when previous owner is removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_record_health_response_resets_counter() {
+        let manager = AgentManager::new_with_cleanup(false);
+        let counter = std::sync::Arc::new(AtomicU32::new(2));
+        {
+            let mut trackers = manager.health_trackers.write().await;
+            trackers.insert("agent-1".to_string(), counter.clone());
+        }
+
+        let accepted = manager
+            .record_health_response("agent-1", 123, "ok".to_string())
+            .await;
+        assert!(accepted);
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn test_record_health_response_unknown_agent() {
+        let manager = AgentManager::new_with_cleanup(false);
+        let accepted = manager
+            .record_health_response("ghost", 0, "ok".to_string())
+            .await;
+        assert!(!accepted);
     }
 }

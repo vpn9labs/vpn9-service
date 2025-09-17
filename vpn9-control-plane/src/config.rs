@@ -19,6 +19,10 @@ pub struct Config {
     pub redis_url: String,
     /// Poll interval in seconds for registry refresh
     pub registry_poll_interval_secs: u64,
+    /// Lease TTL for device<->relay assignment tokens
+    pub lease_ttl_secs: u64,
+    /// Optional secret for decrypting preferred relay hints
+    pub device_pref_secret: Option<String>,
 }
 
 impl Config {
@@ -53,6 +57,13 @@ impl Config {
             .and_then(|s| s.parse().ok())
             .unwrap_or(10);
 
+        let lease_ttl_secs: u64 = std::env::var("VPN9_LEASE_TTL_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(180);
+
+        let device_pref_secret = std::env::var("DEVICE_PREF_SECRET").ok();
+
         info!(
             bind_address = %bind_address,
             current_version = %current_version,
@@ -62,6 +73,8 @@ impl Config {
             // WireGuard settings removed from control plane; managed by agents
             redis_url = %redis_url,
             registry_poll_interval_secs = %registry_poll_interval_secs,
+            lease_ttl_secs = lease_ttl_secs,
+            device_pref_secret_present = device_pref_secret.is_some(),
             "Configuration loaded from environment"
         );
 
@@ -73,6 +86,8 @@ impl Config {
             tls_domain,
             redis_url,
             registry_poll_interval_secs,
+            lease_ttl_secs,
+            device_pref_secret,
         })
     }
 
@@ -102,6 +117,8 @@ impl Default for Config {
             tls_domain: "vpn9-control-plane".to_string(),
             redis_url: "redis://127.0.0.1:6379/1".to_string(),
             registry_poll_interval_secs: 10,
+            lease_ttl_secs: 180,
+            device_pref_secret: None,
         }
     }
 }

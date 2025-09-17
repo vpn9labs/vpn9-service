@@ -41,6 +41,8 @@ pub mod agent_manager;
 pub mod config;
 pub mod device_registry;
 pub mod keystore;
+pub mod lease_manager;
+pub mod preferred_relay;
 pub mod server;
 pub mod service;
 
@@ -299,4 +301,32 @@ pub mod error {
     }
 
     impl std::error::Error for ConfigError {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_register_agent_port_is_stable_51820() {
+        let km = KeyManager::new();
+        let keys1 = km
+            .register_agent(
+                "agent-1",
+                "host-a",
+                "203.0.113.1",
+                "FxDknS+tXYeK478okCCqnbnA01W8P5n+nYEs3y9RelE=",
+            )
+            .expect("register");
+        assert_eq!(keys1.listen_port, 51820);
+        let keys2 = km
+            .register_agent(
+                "agent-2",
+                "host-b",
+                "203.0.113.2",
+                "vv6L6U/VUdyojOQMua5a/jWG91P3yn7su91EN3NmKF8=",
+            )
+            .expect("register");
+        assert_eq!(keys2.listen_port, 51820);
+    }
 }

@@ -26,6 +26,10 @@ zeroize = "1.7"
 strong-box = "0.5.1"
 x25519-dalek = "2.0.1"
 chrono = { version = "0.4", features = ["clock", "serde", "std"] }
+rand = { version = "0.8", features = ["std", "std_rng"] }
+thiserror = "1.0"
+openssl = { version = "0.10", features = ["vendored"] }
+ring = "0.17"
 
 
 [dev-dependencies]

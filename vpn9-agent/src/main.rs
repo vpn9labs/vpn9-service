@@ -1,3 +1,4 @@
+use std::env;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 use vpn9_agent::agent::VPN9Agent;
@@ -15,8 +16,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     rustls::crypto::ring::default_provider()
         .install_default()
         .map_err(|_| "Failed to install default crypto provider")?;
-    // Get version information
+
+    // Support CLI flag for version-only output before we touch configuration
+    let args: Vec<String> = env::args().collect();
     let version_info = get_version_info();
+    if args.iter().any(|arg| arg == "--version" || arg == "-V") {
+        println!("{}", version_info.full_version());
+        return Ok(());
+    }
 
     // Load configuration from environment variables
     let config = AgentConfig::load_from_env();

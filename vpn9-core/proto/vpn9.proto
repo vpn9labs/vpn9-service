@@ -19,6 +19,7 @@ package VPN9;
 
 service ControlPlane {
   rpc SubscribeAgent(AgentSubscriptionRequest) returns (stream AgentSubscriptionMessage) {}
+  rpc ReportHealth(HealthResponse) returns (HealthAck) {}
 }
 
 // ------------------------------------------------------------
@@ -54,12 +55,22 @@ message PeerAdd {
   repeated string allowed_ips = 3;
   // Device IPv6 address (informational; allowed_ips should be the source of truth)
   string ipv6 = 4;
+  bytes lease_nonce = 5;
+  uint64 lease_version = 6;
 }
 
 // Request to remove a previously registered peer
 message PeerRemove {
   string agent_id = 1;
   string public_key = 2;
+  bytes expected_nonce = 3;
+}
+
+message LeaseUpdate {
+  string agent_id = 1;
+  string public_key = 2;
+  bytes lease_nonce = 3;
+  uint64 lease_version = 4;
 }
 
 message HealthCheck {
@@ -71,6 +82,10 @@ message HealthResponse {
   string agent_id = 1;
   int64 timestamp = 2;
   string status = 3;
+}
+
+message HealthAck {
+  bool accepted = 1;
 }
 
 message AgentDisconnect {
@@ -87,6 +102,7 @@ message AgentSubscriptionMessage {
     HealthCheck health_check = 4;
     HealthResponse health_response = 5;
     AgentDisconnect agent_disconnect = 6;
+    LeaseUpdate lease_update = 8;
   }
 }
 
