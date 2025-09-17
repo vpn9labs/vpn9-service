@@ -8,9 +8,9 @@ use vpn9_agent::version::get_version_info;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing subscriber
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("vpn9_agent=info".parse()?))
-        .init();
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     // Initialize the default crypto provider for rustls
     rustls::crypto::ring::default_provider()

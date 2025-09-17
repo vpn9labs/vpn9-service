@@ -6,7 +6,8 @@ use defguard_wireguard_rs::{
     InterfaceConfiguration, Kernel, WGApi, WireguardInterfaceApi, host::Peer, key::Key,
     net::IpAddrMask,
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
+use vpn9_core::control_plane::{AgentRegistration, PeerAdd, PeerRemove};
 use x25519_dalek::{PublicKey, StaticSecret};
 
 #[cfg(target_os = "macos")]
@@ -115,6 +116,65 @@ impl WireGuardManager {
         Ok(())
     }
 
+    pub fn configure_from_registration(
+        &self,
+        registration: &AgentRegistration,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        info!("🎉 Agent registered successfully!");
+        info!("  Status: {}", registration.status);
+        info!("  Control Plane Public Key: {}", registration.wg_public_key);
+        info!("  WireGuard Listen Port: {}", registration.wg_listen_port);
+
+        match self.configure_wireguard(
+            registration.wg_private_key.clone(),
+            registration.wg_public_key.clone(),
+            registration.wg_listen_port,
+        ) {
+            Ok(_) => {
+                if let Ok(status) = self.get_interface_status() {
+                    info!("📊 WireGuard Interface Status:\n{}", status);
+                }
+                Ok(())
+            }
+            Err(err) => {
+                error!(?err, "❌ Failed to configure WireGuard from registration");
+                error!("The agent will continue running but VPN functionality will be disabled.");
+                Err(err)
+            }
+        }
+    }
+
+    pub fn add_peer_from_request(
+        &self,
+        request: &PeerAdd,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let allowed_ips = if !request.allowed_ips.is_empty() {
+            request.allowed_ips.clone()
+        } else {
+            vec!["0.0.0.0/0".to_string()]
+        };
+
+        self.add_peer(&request.public_key, allowed_ips, None)
+            .map(|_| {
+                info!(
+                    "✅ Peer added (agent: {}, public_key: {}, lease_version: {})",
+                    request.agent_id, request.public_key, request.lease_version
+                );
+            })
+    }
+
+    pub fn remove_peer_from_request(
+        &self,
+        request: &PeerRemove,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.remove_peer(&request.public_key).map(|_| {
+            info!(
+                "✅ Peer removed (agent: {}, public_key: {})",
+                request.agent_id, request.public_key
+            );
+        })
+    }
+
     fn get_interface_name(&self) -> String {
         if cfg!(target_os = "linux") || cfg!(target_os = "freebsd") {
             "wg0".to_string()
@@ -198,8 +258,6 @@ impl WireGuardManager {
 
         let api_guard = self.wg_api.lock().unwrap();
         if let Some(ref wg_api) = *api_guard {
-            info!("Adding peer: {}", peer_public_key);
-
             // Parse the peer public key
             let peer_key_bytes =
                 base64::engine::general_purpose::STANDARD.decode(peer_public_key)?;
@@ -223,8 +281,6 @@ impl WireGuardManager {
 
             // Add the peer
             wg_api.configure_peer(&peer)?;
-
-            info!("✅ Peer added successfully: {}", peer_public_key);
         } else {
             return Err("WireGuard API not initialized".into());
         }
@@ -239,8 +295,6 @@ impl WireGuardManager {
 
         let api_guard = self.wg_api.lock().unwrap();
         if let Some(ref wg_api) = *api_guard {
-            info!("Removing peer: {}", peer_public_key);
-
             // Parse the peer public key
             let peer_key_bytes =
                 base64::engine::general_purpose::STANDARD.decode(peer_public_key)?;
@@ -251,8 +305,6 @@ impl WireGuardManager {
 
             // Remove the peer
             wg_api.remove_peer(&peer_key)?;
-
-            info!("✅ Peer removed successfully: {}", peer_public_key);
         } else {
             return Err("WireGuard API not initialized".into());
         }
