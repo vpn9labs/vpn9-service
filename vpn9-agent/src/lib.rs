@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod agent_id;
 pub mod config;
 pub mod runtime_security;
 pub mod secure_system_info;
@@ -6,6 +7,7 @@ pub mod version;
 pub mod wireguard_manager;
 
 pub use agent::VPN9Agent;
+pub use agent_id::AgentId;
 pub use config::AgentConfig;
 pub use runtime_security::RuntimeSecurity;
 pub use secure_system_info::{NetInterface, OsInfo, collect_os_info, secure_zero_memory};

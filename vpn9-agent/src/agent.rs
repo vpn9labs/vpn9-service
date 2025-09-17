@@ -6,7 +6,6 @@ use std::time::Duration;
 use tonic::Streaming;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig};
 use tracing::{debug, error, info, warn};
-use uuid::Uuid;
 
 use vpn9_core::control_plane::control_plane_client::ControlPlaneClient;
 use vpn9_core::control_plane::{
@@ -16,13 +15,14 @@ use vpn9_core::control_plane::{
 
 use tokio::sync::{Mutex, RwLock};
 
+use crate::agent_id::AgentId;
 use crate::runtime_security::RuntimeSecurity;
 use crate::secure_system_info::{OsInfo, collect_os_info};
 use crate::version::get_version;
 use crate::wireguard_manager::WireGuardManager;
 
 pub struct VPN9Agent {
-    agent_id: Uuid,
+    agent_id: AgentId,
     control_plane_url: String,
     agent_version: String,
     heartbeat_interval: Duration,
@@ -45,24 +45,8 @@ enum SessionAction {
 
 impl VPN9Agent {
     pub fn new(control_plane_url: String) -> Self {
-        fn derive_stable_agent_id() -> Uuid {
-            if let Ok(s) = std::env::var("VPN9_AGENT_ID") {
-                if let Ok(id) = Uuid::parse_str(s.trim()) {
-                    return id;
-                }
-            }
-            if let Ok(machine_id) = fs::read_to_string("/etc/machine-id") {
-                let name = format!("vpn9-agent:{}", machine_id.trim());
-                return Uuid::new_v5(&Uuid::NAMESPACE_OID, name.as_bytes());
-            }
-            if let Ok(hn) = std::env::var("HOSTNAME") {
-                let name = format!("vpn9-agent:{}", hn.trim());
-                return Uuid::new_v5(&Uuid::NAMESPACE_DNS, name.as_bytes());
-            }
-            Uuid::new_v4()
-        }
         Self {
-            agent_id: derive_stable_agent_id(),
+            agent_id: AgentId::derive(),
             control_plane_url,
             agent_version: get_version(),
             heartbeat_interval: Duration::from_secs(60),
@@ -446,7 +430,7 @@ impl VPN9Agent {
         self.runtime_security.secure_shutdown();
     }
 
-    pub fn agent_id(&self) -> &Uuid {
+    pub fn agent_id(&self) -> &AgentId {
         &self.agent_id
     }
 
