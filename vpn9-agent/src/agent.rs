@@ -1,6 +1,7 @@
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fs;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tonic::transport::{Certificate, Channel, ClientTlsConfig};
 use tonic::{Status, Streaming};
@@ -13,12 +14,17 @@ use vpn9_core::control_plane::{
 };
 
 use tokio::sync::Mutex;
+use tokio::time::MissedTickBehavior;
 
 use crate::agent_id::AgentId;
 use crate::runtime_security::RuntimeSecurity;
 use crate::secure_system_info::{OsInfo, collect_os_info};
 use crate::version::get_version;
-use crate::wireguard_manager::WireGuardManager;
+use crate::wireguard_manager::{PeerSnapshot, WireGuardManager};
+
+const DEFAULT_HANDSHAKE_STALE_SECS: u64 = 180;
+const KEEPALIVE_STALE_MULTIPLIER: u64 = 3;
+const HANDSHAKE_DETECT_INTERVAL_SECS: u64 = 5;
 
 pub struct VPN9Agent {
     agent_id: AgentId,
@@ -27,6 +33,15 @@ pub struct VPN9Agent {
     heartbeat_interval: Duration,
     runtime_security: RuntimeSecurity,
     wireguard_manager: Arc<WireGuardManager>,
+    handshake_state: Arc<Mutex<HashMap<String, PeerState>>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct PeerState {
+    last_handshake: Option<SystemTime>,
+    last_tx: u64,
+    last_rx: u64,
+    connected: bool,
 }
 
 #[derive(Debug)]
@@ -44,6 +59,7 @@ impl VPN9Agent {
             heartbeat_interval: Duration::from_secs(60),
             runtime_security: RuntimeSecurity::new(),
             wireguard_manager: Arc::new(WireGuardManager::new()),
+            handshake_state: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -193,11 +209,17 @@ impl VPN9Agent {
         let wg_manager = self.wireguard_manager.clone();
         let health_client = health_client;
         let mut heartbeat_interval = tokio::time::interval(self.heartbeat_interval);
+        let mut handshake_interval =
+            tokio::time::interval(Duration::from_secs(HANDSHAKE_DETECT_INTERVAL_SECS));
+
+        heartbeat_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        handshake_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         loop {
             let event = tokio::select! {
                 message = response_stream.message() => AgentEvent::from_stream_result(message),
                 _ = heartbeat_interval.tick() => AgentEvent::Heartbeat,
+                _ = handshake_interval.tick() => AgentEvent::HandshakePoll,
             };
 
             match event {
@@ -219,6 +241,9 @@ impl VPN9Agent {
                 }
                 AgentEvent::Heartbeat => {
                     self.log_heartbeat(secure_status, wg_manager.as_ref());
+                }
+                AgentEvent::HandshakePoll => {
+                    self.detect_new_handshakes(wg_manager.as_ref()).await;
                 }
                 AgentEvent::Empty => {}
             }
@@ -381,6 +406,110 @@ impl VPN9Agent {
             reason: disconnect.reason,
         }
     }
+
+    async fn detect_new_handshakes(&self, wg_manager: &WireGuardManager) {
+        let snapshots = match wg_manager.peer_snapshots() {
+            Ok(peers) => peers,
+            Err(err) => {
+                debug!(?err, "Failed to read WireGuard handshake state");
+                return;
+            }
+        };
+
+        self.update_peer_states(snapshots).await;
+    }
+
+    async fn update_peer_states(&self, snapshots: Vec<PeerSnapshot>) {
+        let now = SystemTime::now();
+        let mut state = self.handshake_state.lock().await;
+        let mut seen = HashSet::new();
+
+        for snapshot in snapshots {
+            let PeerSnapshot {
+                public_key,
+                mut last_handshake,
+                tx_bytes,
+                rx_bytes,
+                persistent_keepalive_interval,
+            } = snapshot;
+
+            last_handshake =
+                last_handshake.and_then(|time| match time.duration_since(UNIX_EPOCH) {
+                    Ok(duration) if duration.as_secs() > 0 || duration.subsec_nanos() > 0 => {
+                        Some(time)
+                    }
+                    _ => None,
+                });
+
+            seen.insert(public_key.clone());
+
+            let entry = match state.entry(public_key.clone()) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => entry.insert(PeerState::default()),
+            };
+
+            let previous_handshake = entry.last_handshake;
+            let was_connected = entry.connected;
+            let previous_tx = entry.last_tx;
+            let previous_rx = entry.last_rx;
+
+            let handshake_changed = previous_handshake != last_handshake;
+            if handshake_changed {
+                match last_handshake {
+                    Some(time) => match time.duration_since(UNIX_EPOCH) {
+                        Ok(duration) => info!(
+                            peer = %public_key,
+                            handshake_epoch = duration.as_secs(),
+                            "🤝 WireGuard handshake observed"
+                        ),
+                        Err(_) => info!(
+                            peer = %public_key,
+                            "🤝 WireGuard handshake observed (pre-epoch timestamp)"
+                        ),
+                    },
+                    None => debug!(peer = %public_key, "WireGuard handshake timestamp cleared"),
+                }
+            }
+
+            let threshold = handshake_stale_threshold(persistent_keepalive_interval);
+            let handshake_stale = match last_handshake {
+                Some(time) => match now.duration_since(time) {
+                    Ok(age) => age > threshold,
+                    Err(_) => false,
+                },
+                None => true,
+            };
+
+            let bytes_advancing = previous_tx != tx_bytes || previous_rx != rx_bytes;
+            let connected = last_handshake.is_some() && (!handshake_stale || bytes_advancing);
+
+            if was_connected && !connected {
+                let age_secs = last_handshake
+                    .and_then(|time| now.duration_since(time).ok())
+                    .map(|age| age.as_secs())
+                    .unwrap_or(0);
+                info!(
+                    peer = %public_key,
+                    handshake_age_secs = age_secs,
+                    "⚠️ WireGuard peer handshake stale; marking disconnected"
+                );
+            }
+
+            entry.last_handshake = last_handshake;
+            entry.last_tx = tx_bytes;
+            entry.last_rx = rx_bytes;
+            entry.connected = connected;
+        }
+
+        state.retain(|key, _entry| {
+            if !seen.contains(key) {
+                info!(peer = %key, "⚠️ WireGuard peer removed from interface; marking disconnected");
+                false
+            } else {
+                true
+            }
+        });
+    }
 }
 
 #[derive(Debug)]
@@ -390,6 +519,7 @@ enum AgentEvent {
     StreamClosed,
     StreamError(Status),
     Heartbeat,
+    HandshakePoll,
 }
 
 impl AgentEvent {
@@ -408,10 +538,22 @@ impl AgentEvent {
     }
 }
 
+fn handshake_stale_threshold(keepalive: Option<u16>) -> Duration {
+    let keepalive_threshold = keepalive.filter(|interval| *interval > 0).map(|interval| {
+        Duration::from_secs((interval as u64).saturating_mul(KEEPALIVE_STALE_MULTIPLIER))
+    });
+
+    keepalive_threshold
+        .map(|duration| duration.max(Duration::from_secs(DEFAULT_HANDSHAKE_STALE_SECS)))
+        .unwrap_or_else(|| Duration::from_secs(DEFAULT_HANDSHAKE_STALE_SECS))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wireguard_manager::PeerSnapshot;
     use std::net::IpAddr;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tonic::transport::Channel;
     use vpn9_core::control_plane::{
         AgentDisconnect, AgentSubscriptionMessage, HealthCheck, LeaseUpdate,
@@ -529,5 +671,60 @@ mod tests {
         let result = agent.handle_health_check(check, &health_client).await;
 
         assert!(result.is_ok());
+    }
+
+    fn make_snapshot(handshake: Option<SystemTime>, tx: u64, rx: u64) -> PeerSnapshot {
+        PeerSnapshot {
+            public_key: "peer".into(),
+            last_handshake: handshake,
+            tx_bytes: tx,
+            rx_bytes: rx,
+            persistent_keepalive_interval: Some(10),
+        }
+    }
+
+    #[tokio::test]
+    async fn update_peer_states_marks_disconnect_when_handshake_stale() {
+        let agent = VPN9Agent::new("https://localhost".into());
+
+        agent
+            .update_peer_states(vec![make_snapshot(Some(SystemTime::now()), 100, 200)])
+            .await;
+
+        let stale_time = SystemTime::now() - Duration::from_secs(600);
+        agent
+            .update_peer_states(vec![make_snapshot(Some(stale_time), 100, 200)])
+            .await;
+
+        let state = agent.handshake_state.lock().await;
+        let peer_state = state.get("peer").expect("peer state");
+        assert!(!peer_state.connected);
+    }
+
+    #[tokio::test]
+    async fn update_peer_states_removes_missing_peer() {
+        let agent = VPN9Agent::new("https://localhost".into());
+
+        agent
+            .update_peer_states(vec![make_snapshot(Some(SystemTime::now()), 1, 1)])
+            .await;
+        agent.update_peer_states(Vec::new()).await;
+
+        let state = agent.handshake_state.lock().await;
+        assert!(state.is_empty());
+    }
+
+    #[tokio::test]
+    async fn update_peer_states_treats_epoch_zero_as_missing() {
+        let agent = VPN9Agent::new("https://localhost".into());
+
+        agent
+            .update_peer_states(vec![make_snapshot(Some(UNIX_EPOCH), 10, 20)])
+            .await;
+
+        let state = agent.handshake_state.lock().await;
+        let peer_state = state.get("peer").expect("peer state");
+        assert!(peer_state.last_handshake.is_none());
+        assert!(!peer_state.connected);
     }
 }

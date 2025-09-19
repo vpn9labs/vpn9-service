@@ -1,5 +1,6 @@
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use base64::Engine;
 use defguard_wireguard_rs::{
@@ -20,6 +21,15 @@ pub struct WireGuardConfig {
     pub listen_port: u32,
     pub interface_address: String,
     pub interface_name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PeerSnapshot {
+    pub public_key: String,
+    pub last_handshake: Option<SystemTime>,
+    pub tx_bytes: u64,
+    pub rx_bytes: u64,
+    pub persistent_keepalive_interval: Option<u16>,
 }
 
 pub struct WireGuardManager {
@@ -205,6 +215,31 @@ impl WireGuardManager {
             return Err("WireGuard API not initialized".into());
         }
         Ok(())
+    }
+
+    pub fn peer_snapshots(&self) -> Result<Vec<PeerSnapshot>, Box<dyn std::error::Error>> {
+        if !self.is_configured() {
+            return Ok(Vec::new());
+        }
+
+        let api_guard = self.wg_api.lock().unwrap();
+        if let Some(ref wg_api) = *api_guard {
+            let host = wg_api.read_interface_data()?;
+            let snapshots = host
+                .peers
+                .into_iter()
+                .map(|(key, peer)| PeerSnapshot {
+                    public_key: key.to_lower_hex(),
+                    last_handshake: peer.last_handshake,
+                    tx_bytes: peer.tx_bytes,
+                    rx_bytes: peer.rx_bytes,
+                    persistent_keepalive_interval: peer.persistent_keepalive_interval,
+                })
+                .collect();
+            Ok(snapshots)
+        } else {
+            Err("WireGuard API not initialized".into())
+        }
     }
 
     fn apply_configuration(
