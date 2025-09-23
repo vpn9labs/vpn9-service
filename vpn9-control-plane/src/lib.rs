@@ -42,7 +42,6 @@ pub mod config;
 pub mod device_registry;
 pub mod keystore;
 pub mod lease_manager;
-pub mod preferred_relay;
 pub mod server;
 pub mod service;
 

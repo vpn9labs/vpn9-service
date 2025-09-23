@@ -13,7 +13,6 @@ use crate::config::Config;
 use crate::device_registry::DeviceRegistry;
 use crate::keystore::StrongBoxKeystore;
 use crate::lease_manager::LeaseManager;
-use crate::preferred_relay::PreferredRelayDecryptor;
 
 /// Main VPN9 Control Plane service that implements the gRPC interface
 pub struct VPN9ControlPlane {
@@ -60,7 +59,6 @@ impl VPN9ControlPlane {
         registry: std::sync::Arc<DeviceRegistry>,
         keystore: std::sync::Arc<StrongBoxKeystore>,
         lease_manager: std::sync::Arc<LeaseManager>,
-        preferred_relay: Option<std::sync::Arc<PreferredRelayDecryptor>>,
     ) -> Self {
         info!(
             version = %config.current_version,
@@ -72,7 +70,6 @@ impl VPN9ControlPlane {
             Some(registry.clone()),
             Some(keystore),
             Some(lease_manager),
-            preferred_relay,
         );
 
         Self {

@@ -17,7 +17,6 @@ use crate::device_registry::RegistryDiff;
 use crate::device_registry::{DeviceRecord, DeviceRegistry};
 use crate::keystore::StrongBoxKeystore;
 use crate::lease_manager::{LeaseManager, LeaseState};
-use crate::preferred_relay::PreferredRelayDecryptor;
 use crate::{AgentKeys, KeyManager};
 
 /// Manages agent subscriptions and registrations
@@ -27,8 +26,6 @@ pub struct AgentManager {
     keystore: Option<std::sync::Arc<StrongBoxKeystore>>,
     lease_manager: Option<std::sync::Arc<LeaseManager>>,
     lease_cache: std::sync::Arc<RwLock<HashMap<String, LeaseState>>>,
-    preferred_relay: Option<std::sync::Arc<PreferredRelayDecryptor>>,
-    preferred_owner_cache: std::sync::Arc<RwLock<HashMap<String, String>>>,
     health_trackers: std::sync::Arc<RwLock<HashMap<String, std::sync::Arc<AtomicU32>>>>,
 }
 
@@ -58,52 +55,9 @@ impl AgentManager {
     }
 
     async fn resolve_owner_for_device(
-        registry: Option<&DeviceRegistry>,
-        decryptor: Option<&PreferredRelayDecryptor>,
-        preferred_owner_cache: &std::sync::Arc<RwLock<HashMap<String, String>>>,
         device: &DeviceRecord,
         active_agents: &[String],
     ) -> Option<String> {
-        if let Some(cached) = preferred_owner_cache.read().await.get(&device.id).cloned() {
-            return Some(cached);
-        }
-
-        if let (Some(registry), Some(decryptor)) = (registry, decryptor) {
-            match registry.consume_preferred_relay_hint(&device.id).await {
-                Ok(Some(payload)) => match decryptor.decrypt(&payload) {
-                    Ok(relay_id) => {
-                        if !active_agents.contains(&relay_id) {
-                            warn!(
-                                device_id = %device.id,
-                                preferred_relay = %relay_id,
-                                "Preferred relay not currently active"
-                            );
-                        }
-                        {
-                            let mut cache = preferred_owner_cache.write().await;
-                            cache.insert(device.id.clone(), relay_id.clone());
-                        }
-                        return Some(relay_id);
-                    }
-                    Err(err) => {
-                        warn!(
-                            device_id = %device.id,
-                            error = %err,
-                            "Failed to decrypt preferred relay hint"
-                        );
-                    }
-                },
-                Ok(None) => {}
-                Err(err) => {
-                    warn!(
-                        device_id = %device.id,
-                        error = %err,
-                        "Failed to consume preferred relay hint"
-                    );
-                }
-            }
-        }
-
         AgentManager::owner_for(&device.public_key, active_agents)
     }
 
@@ -157,15 +111,15 @@ impl AgentManager {
     }
 
     pub fn new() -> Self {
-        Self::new_with_cleanup_with_registry(true, None, None, None, None)
+        Self::new_with_cleanup_with_registry(true, None, None, None)
     }
 
     pub fn new_with_cleanup(start_cleanup: bool) -> Self {
-        Self::new_with_cleanup_with_registry(start_cleanup, None, None, None, None)
+        Self::new_with_cleanup_with_registry(start_cleanup, None, None, None)
     }
 
     pub fn new_with_registry(registry: std::sync::Arc<DeviceRegistry>) -> Self {
-        Self::new_with_cleanup_with_registry(true, Some(registry), None, None, None)
+        Self::new_with_cleanup_with_registry(true, Some(registry), None, None)
     }
 
     pub fn new_with_cleanup_with_registry(
@@ -173,7 +127,6 @@ impl AgentManager {
         registry: Option<std::sync::Arc<DeviceRegistry>>,
         keystore: Option<std::sync::Arc<StrongBoxKeystore>>,
         lease_manager: Option<std::sync::Arc<LeaseManager>>,
-        preferred_relay: Option<std::sync::Arc<PreferredRelayDecryptor>>,
     ) -> Self {
         let manager = Self {
             key_manager: KeyManager::new(),
@@ -181,8 +134,6 @@ impl AgentManager {
             keystore,
             lease_manager,
             lease_cache: std::sync::Arc::new(RwLock::new(HashMap::new())),
-            preferred_relay,
-            preferred_owner_cache: std::sync::Arc::new(RwLock::new(HashMap::new())),
             health_trackers: std::sync::Arc::new(RwLock::new(HashMap::new())),
         };
 
@@ -287,8 +238,6 @@ impl AgentManager {
         let registry = self.registry.clone();
         let lease_manager = self.lease_manager.clone();
         let lease_cache = self.lease_cache.clone();
-        let preferred_relay = self.preferred_relay.clone();
-        let preferred_owner_cache = self.preferred_owner_cache.clone();
         let health_counter_clone = health_counter.clone();
         tokio::spawn(async move {
             // Send initial registration confirmation with WireGuard configuration
@@ -329,14 +278,7 @@ impl AgentManager {
                     for chunk in devices.chunks(SEED_CHUNK_SIZE) {
                         for dev in chunk.iter() {
                             let active = key_manager_clone.list_agents();
-                            let owner = AgentManager::resolve_owner_for_device(
-                                registry.as_deref(),
-                                preferred_relay.as_deref(),
-                                &preferred_owner_cache,
-                                dev,
-                                &active,
-                            )
-                            .await;
+                            let owner = AgentManager::resolve_owner_for_device(dev, &active).await;
                             if owner.as_deref() == Some(&agent_id) {
                                 if let Some(ref lm) = lease_manager {
                                     match lm.acquire(&dev.id).await {
@@ -500,14 +442,10 @@ impl AgentManager {
                     // Periodic drift cleanup: remove peers not owned by this relay
                     _ = drift_interval.tick() => {
                         if let Some(reg) = registry.as_ref() {
-                            let decryptor = preferred_relay.as_ref().map(|arc| arc.as_ref());
                             let devices = reg.list_all_devices().await;
                             for dev in devices {
                                 let active = key_manager_clone.list_agents();
                                 let owner = AgentManager::resolve_owner_for_device(
-                                    Some(reg.as_ref()),
-                                    decryptor,
-                                    &preferred_owner_cache,
                                     &dev,
                                     &active,
                                 )
@@ -613,9 +551,6 @@ impl AgentManager {
                             RegistryDiff::Added(dev) => {
                                 let active = key_manager_clone.list_agents();
                                 let owner = AgentManager::resolve_owner_for_device(
-                                    registry.as_deref(),
-                                    preferred_relay.as_deref(),
-                                    &preferred_owner_cache,
                                     &dev,
                                     &active,
                                 )
@@ -691,10 +626,6 @@ impl AgentManager {
                                     let mut cache = lease_cache.write().await;
                                     cache.remove(&public_key)
                                 };
-                                {
-                                    let mut owner_cache = preferred_owner_cache.write().await;
-                                    owner_cache.remove(&device_id);
-                                }
                                 if let Some(ref lm) = lease_manager {
                                     if let Some(state) = cached.clone() {
                                         if let Err(err) = lm.release(&device_id, &state).await {

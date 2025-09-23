@@ -21,8 +21,6 @@ pub struct Config {
     pub registry_poll_interval_secs: u64,
     /// Lease TTL for device<->relay assignment tokens
     pub lease_ttl_secs: u64,
-    /// Optional secret for decrypting preferred relay hints
-    pub device_pref_secret: Option<String>,
 }
 
 impl Config {
@@ -62,8 +60,6 @@ impl Config {
             .and_then(|s| s.parse().ok())
             .unwrap_or(180);
 
-        let device_pref_secret = std::env::var("DEVICE_PREF_SECRET").ok();
-
         info!(
             bind_address = %bind_address,
             current_version = %current_version,
@@ -74,7 +70,6 @@ impl Config {
             redis_url = %redis_url,
             registry_poll_interval_secs = %registry_poll_interval_secs,
             lease_ttl_secs = lease_ttl_secs,
-            device_pref_secret_present = device_pref_secret.is_some(),
             "Configuration loaded from environment"
         );
 
@@ -87,7 +82,6 @@ impl Config {
             redis_url,
             registry_poll_interval_secs,
             lease_ttl_secs,
-            device_pref_secret,
         })
     }
 
@@ -118,7 +112,6 @@ impl Default for Config {
             redis_url: "redis://127.0.0.1:6379/1".to_string(),
             registry_poll_interval_secs: 10,
             lease_ttl_secs: 180,
-            device_pref_secret: None,
         }
     }
 }
