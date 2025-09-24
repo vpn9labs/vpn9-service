@@ -2716,7 +2716,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "vpn9-core",
- "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]

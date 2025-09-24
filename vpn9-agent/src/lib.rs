@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod agent_id;
 pub mod config;
+pub mod firewall;
 pub mod runtime_security;
 pub mod secure_system_info;
 pub mod version;

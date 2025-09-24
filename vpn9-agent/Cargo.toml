@@ -22,7 +22,7 @@ tonic = { version = "0.14.0", features = ["tls-webpki-roots"] }
 rustls = { version = "0.23", features = ["ring"] }
 uuid = { version = "1.17.0", features = ["v4", "v5"] }
 vpn9-core = { path = "../vpn9-core" }
-x25519-dalek = "2.0.1"
+zeroize = "1.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
