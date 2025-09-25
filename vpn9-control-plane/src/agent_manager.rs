@@ -1,5 +1,6 @@
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{RwLock, mpsc};
@@ -8,16 +9,35 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 use tracing::{debug, error, info, warn};
 
+use redis::Commands;
+
 use vpn9_core::control_plane::{
     AgentRegistration, AgentSubscriptionMessage, AgentSubscriptionRequest, HealthCheck,
     LeaseUpdate, PeerAdd, PeerRemove, agent_subscription_message::Message,
 };
 
+use ipnet::{Ipv4Net, Ipv6Net};
+
 use crate::device_registry::RegistryDiff;
 use crate::device_registry::{DeviceRecord, DeviceRegistry};
 use crate::keystore::StrongBoxKeystore;
 use crate::lease_manager::{LeaseManager, LeaseState};
-use crate::{AgentKeys, KeyManager};
+use crate::{AgentKeys, Config, KeyManager};
+
+const IPV4_ALLOC_HASH_KEY: &str = "vpn9:allocator:relay_ipv4";
+
+#[derive(Debug, Default)]
+struct Ipv4AllocatorState {
+    assignments: HashMap<String, InterfaceAssignment>,
+    in_use: HashSet<Ipv4Addr>,
+    next_cursor: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct InterfaceAssignment {
+    ipv4: Ipv4Addr,
+    ipv6: Option<Ipv6Addr>,
+}
 
 /// Manages agent subscriptions and registrations
 pub struct AgentManager {
@@ -27,6 +47,12 @@ pub struct AgentManager {
     lease_manager: Option<std::sync::Arc<LeaseManager>>,
     lease_cache: std::sync::Arc<RwLock<HashMap<String, LeaseState>>>,
     health_trackers: std::sync::Arc<RwLock<HashMap<String, std::sync::Arc<AtomicU32>>>>,
+    relay_ipv4_pool: Ipv4Net,
+    relay_ipv6_pool: Option<Ipv6Net>,
+    ipv4_allocator: std::sync::Arc<std::sync::Mutex<Ipv4AllocatorState>>,
+    allocator_store: Option<std::sync::Arc<redis::Client>>,
+    ipv4_first_host: u32,
+    ipv4_host_capacity: u32,
 }
 
 impl AgentManager {
@@ -110,24 +136,62 @@ impl AgentManager {
         }
     }
 
-    pub fn new() -> Self {
-        Self::new_with_cleanup_with_registry(true, None, None, None)
+    pub fn new(config: &Config) -> Self {
+        Self::new_with_cleanup_with_registry(config, true, None, None, None)
     }
 
-    pub fn new_with_cleanup(start_cleanup: bool) -> Self {
-        Self::new_with_cleanup_with_registry(start_cleanup, None, None, None)
+    pub fn new_with_cleanup(config: &Config, start_cleanup: bool) -> Self {
+        Self::new_with_cleanup_with_registry(config, start_cleanup, None, None, None)
     }
 
-    pub fn new_with_registry(registry: std::sync::Arc<DeviceRegistry>) -> Self {
-        Self::new_with_cleanup_with_registry(true, Some(registry), None, None)
+    pub fn new_with_registry(config: &Config, registry: std::sync::Arc<DeviceRegistry>) -> Self {
+        Self::new_with_cleanup_with_registry(config, true, Some(registry), None, None)
     }
 
     pub fn new_with_cleanup_with_registry(
+        config: &Config,
         start_cleanup: bool,
         registry: Option<std::sync::Arc<DeviceRegistry>>,
         keystore: Option<std::sync::Arc<StrongBoxKeystore>>,
         lease_manager: Option<std::sync::Arc<LeaseManager>>,
     ) -> Self {
+        let relay_ipv4_pool = config.relay_ipv4_pool;
+        let relay_ipv6_pool = config.relay_ipv6_pool.clone();
+
+        let network = relay_ipv4_pool.network();
+        let broadcast = relay_ipv4_pool.broadcast();
+        let network_u32 = u32::from(network);
+        let broadcast_u32 = u32::from(broadcast);
+        let total_space = broadcast_u32.saturating_sub(network_u32);
+        let host_capacity = total_space.saturating_sub(1);
+
+        assert!(
+            host_capacity > 0,
+            "Relay IPv4 pool {relay_ipv4_pool} has no usable host addresses"
+        );
+
+        let ipv4_first_host = network_u32 + 1;
+
+        let mut allocator_state = Ipv4AllocatorState::default();
+        let allocator_store = match redis::Client::open(config.redis_url.as_str()) {
+            Ok(client) => {
+                if let Err(err) = hydrate_ipv4_allocator_state(
+                    &client,
+                    ipv4_first_host,
+                    host_capacity,
+                    relay_ipv6_pool.clone(),
+                    &mut allocator_state,
+                ) {
+                    warn!(error = %err, "Failed to hydrate relay IPv4 allocator from Redis");
+                }
+                Some(std::sync::Arc::new(client))
+            }
+            Err(err) => {
+                warn!(error = %err, "Failed to initialize Redis client for relay IPv4 allocator");
+                None
+            }
+        };
+
         let manager = Self {
             key_manager: KeyManager::new(),
             registry,
@@ -135,6 +199,12 @@ impl AgentManager {
             lease_manager,
             lease_cache: std::sync::Arc::new(RwLock::new(HashMap::new())),
             health_trackers: std::sync::Arc::new(RwLock::new(HashMap::new())),
+            relay_ipv4_pool,
+            relay_ipv6_pool,
+            ipv4_allocator: std::sync::Arc::new(std::sync::Mutex::new(allocator_state)),
+            allocator_store,
+            ipv4_first_host,
+            ipv4_host_capacity: host_capacity,
         };
 
         // Start cleanup task only if requested (for production use)
@@ -147,6 +217,8 @@ impl AgentManager {
     /// Start a background task to clean up expired agents
     fn start_cleanup_task(&self) {
         let key_manager = self.key_manager.clone();
+        let ipv4_allocator = self.ipv4_allocator.clone();
+        let allocator_store = self.allocator_store.clone();
         tokio::spawn(async move {
             let mut cleanup_interval = interval(Duration::from_secs(60)); // Clean up every minute
 
@@ -155,6 +227,34 @@ impl AgentManager {
                 let expired_agents = key_manager.cleanup_expired_agents();
 
                 if !expired_agents.is_empty() {
+                    let removed_agents: Vec<String> = {
+                        let mut state = ipv4_allocator.lock().unwrap();
+                        expired_agents
+                            .iter()
+                            .filter_map(|agent| {
+                                if let Some(assignment) = state.assignments.remove(agent) {
+                                    state.in_use.remove(&assignment.ipv4);
+                                    Some(agent.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect()
+                    };
+
+                    if let Some(store) = allocator_store.as_ref() {
+                        if !removed_agents.is_empty() {
+                            if let Err(err) =
+                                remove_persisted_assignments(&**store, &removed_agents)
+                            {
+                                warn!(
+                                    error = %err,
+                                    removed_agents = ?removed_agents,
+                                    "Failed to remove persisted relay IPv4 assignments for expired agents"
+                                );
+                            }
+                        }
+                    }
                     info!(
                         expired_count = expired_agents.len(),
                         expired_agents = ?expired_agents,
@@ -163,6 +263,180 @@ impl AgentManager {
                 }
             }
         });
+    }
+
+    fn allocate_interface_assignment(&self, agent_id: &str) -> Result<InterfaceAssignment, Status> {
+        let mut state = self
+            .ipv4_allocator
+            .lock()
+            .map_err(|_| Status::internal("IPv4 allocator lock poisoned"))?;
+
+        if let Some(existing) = state.assignments.get(agent_id) {
+            return Ok(*existing);
+        }
+
+        if let Some(restored) = self.try_restore_persisted_assignment(agent_id, &mut state) {
+            return Ok(restored);
+        }
+
+        if self.ipv4_host_capacity == 0 {
+            return Err(Status::internal(
+                "Relay IPv4 pool has no usable host addresses",
+            ));
+        }
+
+        let mut newly_assigned: Option<InterfaceAssignment> = None;
+        for _ in 0..self.ipv4_host_capacity {
+            let offset = state.next_cursor % self.ipv4_host_capacity;
+            state.next_cursor = state.next_cursor.wrapping_add(1);
+            let candidate_u32 = self.ipv4_first_host + offset;
+            let candidate = Ipv4Addr::from(candidate_u32);
+            if state.in_use.insert(candidate) {
+                let ipv6_assignment = self.relay_ipv6_pool.map(|pool| {
+                    let base = u128::from(pool.network());
+                    let candidate_host = base + u128::from(offset) + 1;
+                    Ipv6Addr::from(candidate_host)
+                });
+                let assignment = InterfaceAssignment {
+                    ipv4: candidate,
+                    ipv6: ipv6_assignment,
+                };
+                state.assignments.insert(agent_id.to_string(), assignment);
+                newly_assigned = Some(assignment);
+                break;
+            }
+        }
+
+        let assignment = match newly_assigned {
+            Some(value) => value,
+            None => {
+                return Err(Status::resource_exhausted(
+                    "No available relay IPv4 addresses in configured pool",
+                ));
+            }
+        };
+
+        drop(state);
+
+        if let Some(store) = self.allocator_store.as_ref() {
+            if let Err(err) = persist_assignment(store, agent_id, assignment.ipv4) {
+                warn!(
+                    agent_id = %agent_id,
+                    ipv4 = %assignment.ipv4,
+                    error = %err,
+                    "Failed to persist relay IPv4 assignment"
+                );
+            }
+        }
+
+        Ok(assignment)
+    }
+
+    fn release_interface_assignment(&self, agent_id: &str) {
+        remove_assignment_from_state_and_store(
+            &self.ipv4_allocator,
+            self.allocator_store.as_ref(),
+            agent_id,
+        );
+    }
+
+    fn assignment_from_ipv4(&self, ipv4: Ipv4Addr) -> Option<(InterfaceAssignment, u32)> {
+        let ipv4_u32 = u32::from(ipv4);
+        if ipv4_u32 < self.ipv4_first_host {
+            return None;
+        }
+        let offset = ipv4_u32 - self.ipv4_first_host;
+        if offset >= self.ipv4_host_capacity {
+            return None;
+        }
+        let ipv6_assignment = self.relay_ipv6_pool.map(|pool| {
+            let base = u128::from(pool.network());
+            let candidate_host = base + u128::from(offset) + 1;
+            Ipv6Addr::from(candidate_host)
+        });
+        Some((
+            InterfaceAssignment {
+                ipv4,
+                ipv6: ipv6_assignment,
+            },
+            offset,
+        ))
+    }
+
+    fn try_restore_persisted_assignment(
+        &self,
+        agent_id: &str,
+        state: &mut Ipv4AllocatorState,
+    ) -> Option<InterfaceAssignment> {
+        let store = match self.allocator_store.as_ref() {
+            Some(store) => store.clone(),
+            None => return None,
+        };
+
+        match store.get_connection() {
+            Ok(mut conn) => {
+                let persisted: redis::RedisResult<Option<String>> =
+                    conn.hget(IPV4_ALLOC_HASH_KEY, agent_id);
+                match persisted {
+                    Ok(Some(ip_str)) => match ip_str.parse::<Ipv4Addr>() {
+                        Ok(ipv4) => match self.assignment_from_ipv4(ipv4) {
+                            Some((assignment, _)) => {
+                                if state.in_use.insert(ipv4) {
+                                    state.assignments.insert(agent_id.to_string(), assignment);
+                                    debug!(
+                                        agent_id = %agent_id,
+                                        ipv4 = %ipv4,
+                                        "Restored relay IPv4 assignment from Redis"
+                                    );
+                                    Some(assignment)
+                                } else {
+                                    warn!(
+                                        agent_id = %agent_id,
+                                        ipv4 = %ipv4,
+                                        "Persisted relay IPv4 already marked as in use; allocating new address"
+                                    );
+                                    None
+                                }
+                            }
+                            None => {
+                                warn!(
+                                    agent_id = %agent_id,
+                                    ipv4 = %ipv4,
+                                    "Persisted relay IPv4 outside configured pool; allocating new address"
+                                );
+                                None
+                            }
+                        },
+                        Err(err) => {
+                            warn!(
+                                agent_id = %agent_id,
+                                entry = %ip_str,
+                                error = %err,
+                                "Failed to parse persisted relay IPv4 assignment"
+                            );
+                            None
+                        }
+                    },
+                    Ok(None) => None,
+                    Err(err) => {
+                        warn!(
+                            agent_id = %agent_id,
+                            error = %err,
+                            "Failed to read persisted relay IPv4 assignment"
+                        );
+                        None
+                    }
+                }
+            }
+            Err(err) => {
+                warn!(
+                    agent_id = %agent_id,
+                    error = %err,
+                    "Failed to open Redis connection for relay IPv4 allocator"
+                );
+                None
+            }
+        }
     }
 
     /// Subscribe an agent to the control plane
@@ -239,8 +513,47 @@ impl AgentManager {
         let lease_manager = self.lease_manager.clone();
         let lease_cache = self.lease_cache.clone();
         let health_counter_clone = health_counter.clone();
+        let ipv4_allocator = self.ipv4_allocator.clone();
+        let allocator_store = self.allocator_store.clone();
+        let interface_assignment = match self.allocate_interface_assignment(&agent_id) {
+            Ok(assignment) => assignment,
+            Err(status) => {
+                error!(
+                    agent_id = %agent_id,
+                    error = %status.message(),
+                    "Failed to allocate relay interface address"
+                );
+                return Err(status);
+            }
+        };
+
+        let interface_ipv4_with_prefix = format!(
+            "{}/{}",
+            interface_assignment.ipv4,
+            self.relay_ipv4_pool.prefix_len()
+        );
+        let interface_ipv6_with_prefix = interface_assignment
+            .ipv6
+            .map(|ip| {
+                if let Some(pool) = self.relay_ipv6_pool {
+                    format!("{}/{}", ip, pool.prefix_len())
+                } else {
+                    ip.to_string()
+                }
+            })
+            .unwrap_or_default();
+
+        info!(
+            agent_id = %agent_id,
+            interface_ipv4 = %interface_ipv4_with_prefix,
+            interface_ipv6 = %interface_ipv6_with_prefix,
+            "Assigned relay WireGuard interface addresses"
+        );
+
+        let interface_ipv4_for_msg = interface_ipv4_with_prefix.clone();
+        let interface_ipv6_for_msg = interface_ipv6_with_prefix.clone();
+
         tokio::spawn(async move {
-            // Send initial registration confirmation with WireGuard configuration
             let subscription_msg = AgentSubscriptionMessage {
                 agent_id: agent_id.clone(),
                 message: Some(Message::AgentRegistration(AgentRegistration {
@@ -248,6 +561,8 @@ impl AgentManager {
                     wg_public_key: agent_keys.public_key,
                     wg_private_key: relay_priv_b64,
                     wg_listen_port: agent_keys.listen_port,
+                    wg_interface_ipv4: interface_ipv4_for_msg,
+                    wg_interface_ipv6: interface_ipv6_for_msg,
                 })),
             };
 
@@ -261,6 +576,16 @@ impl AgentManager {
                     agent_id = %agent_id,
                     "Failed to send registration response - client disconnected"
                 );
+                key_manager_clone.remove_agent_keys(&agent_id);
+                remove_assignment_from_state_and_store(
+                    &ipv4_allocator,
+                    allocator_store.as_ref(),
+                    &agent_id,
+                );
+                {
+                    let mut trackers = health_trackers.write().await;
+                    trackers.remove(&agent_id);
+                }
                 return;
             }
 
@@ -656,6 +981,11 @@ impl AgentManager {
                 "Agent subscription ended, cleaning up connection"
             );
             key_manager_clone.remove_agent_keys(&agent_id);
+            remove_assignment_from_state_and_store(
+                &ipv4_allocator,
+                allocator_store.as_ref(),
+                &agent_id,
+            );
             {
                 let mut trackers = health_trackers.write().await;
                 trackers.remove(&agent_id);
@@ -677,7 +1007,11 @@ impl AgentManager {
 
     /// Remove an agent from the system
     pub fn remove_agent(&self, agent_id: &str) -> bool {
-        self.key_manager.remove_agent_keys(agent_id)
+        let removed = self.key_manager.remove_agent_keys(agent_id);
+        if removed {
+            self.release_interface_assignment(agent_id);
+        }
+        removed
     }
 
     /// Get agent statistics with accurate active/total counts
@@ -728,7 +1062,8 @@ impl AgentManager {
 
 impl Default for AgentManager {
     fn default() -> Self {
-        Self::new()
+        let config = Config::default();
+        Self::new(&config)
     }
 }
 
@@ -740,20 +1075,164 @@ pub struct AgentStats {
     pub registered_agents: Vec<String>,
 }
 
+fn hydrate_ipv4_allocator_state(
+    client: &redis::Client,
+    ipv4_first_host: u32,
+    host_capacity: u32,
+    relay_ipv6_pool: Option<Ipv6Net>,
+    state: &mut Ipv4AllocatorState,
+) -> Result<(), redis::RedisError> {
+    let mut conn = client.get_connection()?;
+    let persisted: HashMap<String, String> = conn.hgetall(IPV4_ALLOC_HASH_KEY)?;
+    let ipv6_pool = relay_ipv6_pool;
+    for (agent_id, ipv4_str) in persisted {
+        match ipv4_str.parse::<Ipv4Addr>() {
+            Ok(ipv4) => {
+                let ipv4_u32 = u32::from(ipv4);
+                if ipv4_u32 < ipv4_first_host {
+                    warn!(
+                        agent_id = %agent_id,
+                        ipv4 = %ipv4,
+                        "Persisted relay IPv4 is below configured pool; skipping"
+                    );
+                    continue;
+                }
+                let offset = ipv4_u32 - ipv4_first_host;
+                if offset >= host_capacity {
+                    warn!(
+                        agent_id = %agent_id,
+                        ipv4 = %ipv4,
+                        "Persisted relay IPv4 outside configured pool; skipping"
+                    );
+                    continue;
+                }
+                if state.in_use.insert(ipv4) {
+                    let ipv6_assignment = ipv6_pool.as_ref().map(|pool| {
+                        let base = u128::from(pool.network());
+                        let candidate_host = base + u128::from(offset) + 1;
+                        Ipv6Addr::from(candidate_host)
+                    });
+                    state.assignments.insert(
+                        agent_id.clone(),
+                        InterfaceAssignment {
+                            ipv4,
+                            ipv6: ipv6_assignment,
+                        },
+                    );
+                } else {
+                    warn!(
+                        agent_id = %agent_id,
+                        ipv4 = %ipv4,
+                        "Duplicate relay IPv4 assignment detected during hydration; skipping"
+                    );
+                }
+            }
+            Err(err) => {
+                warn!(
+                    agent_id = %agent_id,
+                    entry = %ipv4_str,
+                    error = %err,
+                    "Invalid IPv4 stored for relay assignment; skipping"
+                );
+            }
+        }
+    }
+
+    state.next_cursor = state.assignments.len() as u32;
+    debug!(
+        restored_assignments = state.assignments.len(),
+        "Hydrated relay IPv4 allocator state from Redis"
+    );
+    Ok(())
+}
+
+fn persist_assignment(
+    store: &redis::Client,
+    agent_id: &str,
+    ipv4: Ipv4Addr,
+) -> Result<(), redis::RedisError> {
+    let mut conn = store.get_connection()?;
+    let _: usize = conn.hset(IPV4_ALLOC_HASH_KEY, agent_id, ipv4.to_string())?;
+    Ok(())
+}
+
+fn remove_persisted_assignment(
+    store: &redis::Client,
+    agent_id: &str,
+) -> Result<(), redis::RedisError> {
+    let mut conn = store.get_connection()?;
+    let _: usize = conn.hdel(IPV4_ALLOC_HASH_KEY, agent_id)?;
+    Ok(())
+}
+
+fn remove_persisted_assignments(
+    store: &redis::Client,
+    agent_ids: &[String],
+) -> Result<(), redis::RedisError> {
+    if agent_ids.is_empty() {
+        return Ok(());
+    }
+    let mut conn = store.get_connection()?;
+    let mut cmd = redis::cmd("HDEL");
+    cmd.arg(IPV4_ALLOC_HASH_KEY);
+    for agent in agent_ids {
+        cmd.arg(agent);
+    }
+    let _: usize = cmd.query(&mut conn)?;
+    Ok(())
+}
+
+fn remove_assignment_from_state_and_store(
+    ipv4_allocator: &std::sync::Arc<std::sync::Mutex<Ipv4AllocatorState>>,
+    allocator_store: Option<&std::sync::Arc<redis::Client>>,
+    agent_id: &str,
+) {
+    let removed_from_memory = if let Ok(mut state) = ipv4_allocator.lock() {
+        if let Some(assignment) = state.assignments.remove(agent_id) {
+            state.in_use.remove(&assignment.ipv4);
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if let Some(store) = allocator_store {
+        if let Err(err) = remove_persisted_assignment(&**store, agent_id) {
+            warn!(
+                agent_id = %agent_id,
+                error = %err,
+                "Failed to remove persisted relay IPv4 assignment"
+            );
+        } else if removed_from_memory {
+            debug!(
+                agent_id = %agent_id,
+                "Removed persisted relay IPv4 assignment"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn make_agent_manager() -> AgentManager {
+        let config = Config::default();
+        AgentManager::new_with_cleanup(&config, false)
+    }
+
     #[test]
     fn test_agent_manager_creation() {
-        let agent_manager = AgentManager::new_with_cleanup(false);
+        let agent_manager = make_agent_manager();
         let stats = agent_manager.get_agent_stats();
         assert_eq!(stats.total_agents, 0);
     }
 
     #[test]
     fn test_list_registered_agents_empty() {
-        let agent_manager = AgentManager::new_with_cleanup(false);
+        let agent_manager = make_agent_manager();
         let agents = agent_manager.list_registered_agents();
         assert!(agents.is_empty());
     }
@@ -795,7 +1274,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_record_health_response_resets_counter() {
-        let manager = AgentManager::new_with_cleanup(false);
+        let manager = make_agent_manager();
         let counter = std::sync::Arc::new(AtomicU32::new(2));
         {
             let mut trackers = manager.health_trackers.write().await;
@@ -811,7 +1290,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_record_health_response_unknown_agent() {
-        let manager = AgentManager::new_with_cleanup(false);
+        let manager = make_agent_manager();
         let accepted = manager
             .record_health_response("ghost", 0, "ok".to_string())
             .await;

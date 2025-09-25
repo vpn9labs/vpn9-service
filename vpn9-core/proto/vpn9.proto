@@ -31,6 +31,8 @@ message AgentRegistration {
   string wg_public_key = 2;
   string wg_private_key = 3; // Base64 X25519 private key (sent to agent)
   uint32 wg_listen_port = 4;
+  string wg_interface_ipv4 = 5;
+  string wg_interface_ipv6 = 6;
 }
 
 // ------------------------------------------------------------

@@ -29,7 +29,7 @@ impl VPN9ControlPlane {
             "Initializing VPN9 Control Plane service"
         );
 
-        let agent_manager = AgentManager::new(); // Use cleanup in production
+        let agent_manager = AgentManager::new(&config); // Use cleanup in production
         Self {
             config,
             agent_manager,
@@ -44,7 +44,7 @@ impl VPN9ControlPlane {
             "Initializing VPN9 Control Plane service (with registry)"
         );
 
-        let agent_manager = AgentManager::new_with_registry(registry.clone());
+        let agent_manager = AgentManager::new_with_registry(&config, registry.clone());
 
         Self {
             config,
@@ -66,6 +66,7 @@ impl VPN9ControlPlane {
         );
 
         let agent_manager = crate::agent_manager::AgentManager::new_with_cleanup_with_registry(
+            &config,
             true,
             Some(registry.clone()),
             Some(keystore),
@@ -138,7 +139,7 @@ mod tests {
 
     fn create_test_service() -> VPN9ControlPlane {
         let config = Config::default();
-        let agent_manager = AgentManager::new_with_cleanup(false); // No cleanup in tests
+        let agent_manager = AgentManager::new_with_cleanup(&config, false); // No cleanup in tests
 
         VPN9ControlPlane {
             config,

@@ -1,5 +1,8 @@
 use std::net::SocketAddr;
+use std::str::FromStr;
 use tracing::{info, warn};
+
+use ipnet::{Ipv4Net, Ipv6Net};
 
 /// Configuration for the VPN9 Control Plane server
 #[derive(Debug, Clone)]
@@ -21,6 +24,10 @@ pub struct Config {
     pub registry_poll_interval_secs: u64,
     /// Lease TTL for device<->relay assignment tokens
     pub lease_ttl_secs: u64,
+    /// IPv4 pool for assigning relay interface addresses
+    pub relay_ipv4_pool: Ipv4Net,
+    /// Optional IPv6 pool for relay interface addresses
+    pub relay_ipv6_pool: Option<Ipv6Net>,
 }
 
 impl Config {
@@ -60,6 +67,15 @@ impl Config {
             .and_then(|s| s.parse().ok())
             .unwrap_or(180);
 
+        let relay_ipv4_pool = std::env::var("VPN9_RELAY_IPV4_POOL")
+            .ok()
+            .and_then(|cidr| Ipv4Net::from_str(&cidr).ok())
+            .unwrap_or_else(|| Ipv4Net::from_str("10.8.0.0/16").expect("static cidr"));
+
+        let relay_ipv6_pool = std::env::var("VPN9_RELAY_IPV6_POOL")
+            .ok()
+            .and_then(|cidr| Ipv6Net::from_str(&cidr).ok());
+
         info!(
             bind_address = %bind_address,
             current_version = %current_version,
@@ -70,6 +86,8 @@ impl Config {
             redis_url = %redis_url,
             registry_poll_interval_secs = %registry_poll_interval_secs,
             lease_ttl_secs = lease_ttl_secs,
+            relay_ipv4_pool = %relay_ipv4_pool,
+            relay_ipv6_pool = relay_ipv6_pool.as_ref().map(|p| p.to_string()),
             "Configuration loaded from environment"
         );
 
@@ -82,6 +100,8 @@ impl Config {
             redis_url,
             registry_poll_interval_secs,
             lease_ttl_secs,
+            relay_ipv4_pool,
+            relay_ipv6_pool,
         })
     }
 
@@ -112,6 +132,8 @@ impl Default for Config {
             redis_url: "redis://127.0.0.1:6379/1".to_string(),
             registry_poll_interval_secs: 10,
             lease_ttl_secs: 180,
+            relay_ipv4_pool: Ipv4Net::from_str("10.8.0.0/16").expect("static cidr"),
+            relay_ipv6_pool: None,
         }
     }
 }

@@ -21,7 +21,8 @@ pub struct WireGuardConfig {
     private_key: SensitiveString,
     pub public_key: String,
     pub listen_port: u32,
-    pub interface_address: String,
+    pub interface_ipv4: String,
+    pub interface_ipv6: Option<String>,
     pub interface_name: String,
 }
 
@@ -30,14 +31,16 @@ impl WireGuardConfig {
         private_key: SensitiveString,
         public_key: String,
         listen_port: u32,
-        interface_address: String,
+        interface_ipv4: String,
+        interface_ipv6: Option<String>,
         interface_name: String,
     ) -> Self {
         Self {
             private_key,
             public_key,
             listen_port,
-            interface_address,
+            interface_ipv4,
+            interface_ipv6,
             interface_name,
         }
     }
@@ -56,7 +59,8 @@ impl fmt::Debug for WireGuardConfig {
         f.debug_struct("WireGuardConfig")
             .field("public_key", &self.public_key)
             .field("listen_port", &self.listen_port)
-            .field("interface_address", &self.interface_address)
+            .field("interface_ipv4", &self.interface_ipv4)
+            .field("interface_ipv6", &self.interface_ipv6)
             .field("interface_name", &self.interface_name)
             .finish()
     }
@@ -170,21 +174,21 @@ impl WireGuardManager {
         private_key: String,
         public_key: String,
         listen_port: u32,
+        interface_ipv4: String,
+        interface_ipv6: Option<String>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         info!("🔧 Configuring WireGuard interface...");
 
         // Determine interface name based on OS
         let interface_name = self.get_interface_name();
 
-        // Assign IP address for this agent (in production, this should come from control plane)
-        let interface_address = self.generate_interface_address()?;
-
         let public_key_for_log = public_key.clone();
         let config = WireGuardConfig::new(
             SensitiveString::new(private_key),
             public_key,
             listen_port,
-            interface_address.clone(),
+            interface_ipv4.clone(),
+            interface_ipv6.clone(),
             interface_name.clone(),
         );
 
@@ -235,7 +239,10 @@ impl WireGuardManager {
 
         info!("✅ WireGuard interface configured successfully!");
         info!("  Interface: {}", interface_name);
-        info!("  Address: {}", interface_address);
+        info!("  IPv4: {}", interface_ipv4);
+        if let Some(ipv6) = interface_ipv6 {
+            info!("  IPv6: {}", ipv6);
+        }
         info!("  Listen Port: {}", listen_port);
         info!("  Public Key: {}", public_key_for_log);
 
@@ -255,6 +262,18 @@ impl WireGuardManager {
             registration.wg_private_key.clone(),
             registration.wg_public_key.clone(),
             registration.wg_listen_port,
+            {
+                let ipv4 = registration.wg_interface_ipv4.trim();
+                if ipv4.is_empty() {
+                    return Err("Control plane did not provide IPv4 interface address".into());
+                }
+                ipv4.to_string()
+            },
+            if registration.wg_interface_ipv6.trim().is_empty() {
+                None
+            } else {
+                Some(registration.wg_interface_ipv6.clone())
+            },
         ) {
             Ok(_) => {
                 if let Ok(status) = self.get_interface_status() {
@@ -309,15 +328,6 @@ impl WireGuardManager {
         }
     }
 
-    /// Generate IP address for this agent interface
-    /// In production, this should be assigned by the control plane
-    fn generate_interface_address(&self) -> Result<String, Box<dyn std::error::Error>> {
-        // For now, use a simple approach - in production, control plane should assign this
-        let base_ip = "10.8.0";
-        let host_part = 2; // This should be dynamically assigned
-        Ok(format!("{base_ip}.{host_part}"))
-    }
-
     fn create_interface(&self) -> Result<(), Box<dyn std::error::Error>> {
         let api_guard = self.wg_api.lock().unwrap();
         if let Some(ref wg_api) = *api_guard {
@@ -366,14 +376,17 @@ impl WireGuardManager {
         if let Some(ref wg_api) = *api_guard {
             info!("Applying WireGuard configuration...");
 
-            // Parse the interface address with CIDR notation (switched to /8)
-            let interface_addr_with_cidr = format!("{}/8", config.interface_address);
-            let interface_addr = IpAddrMask::from_str(&interface_addr_with_cidr)?;
-
             let mut interface_config = InterfaceConfiguration {
                 name: config.interface_name.clone(),
                 prvkey: config.private_key().as_str().to_owned(),
-                addresses: vec![interface_addr],
+                addresses: {
+                    let mut addrs = Vec::new();
+                    addrs.push(IpAddrMask::from_str(&config.interface_ipv4)?);
+                    if let Some(ref ipv6) = config.interface_ipv6 {
+                        addrs.push(IpAddrMask::from_str(ipv6)?);
+                    }
+                    addrs
+                },
                 port: config.listen_port,
                 peers: vec![], // No initial peers - they will be added when other agents connect
                 mtu: Some(1420), // Standard WireGuard MTU

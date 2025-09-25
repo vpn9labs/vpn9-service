@@ -30,6 +30,7 @@ rand = { version = "0.8", features = ["std", "std_rng"] }
 thiserror = "1.0"
 openssl = { version = "0.10", features = ["vendored"] }
 ring = "0.17"
+ipnet = "2.9"
 
 
 [dev-dependencies]
