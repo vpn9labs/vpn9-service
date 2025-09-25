@@ -307,10 +307,6 @@ impl VPN9Agent {
                 self.handle_peer_remove(peer_rm, wg_manager);
                 Ok(None)
             }
-            Message::LeaseUpdate(update) => {
-                self.handle_lease_update(update);
-                Ok(None)
-            }
             Message::HealthCheck(health_check) => {
                 self.handle_health_check(health_check, health_client)
                     .await?;
@@ -355,13 +351,6 @@ impl VPN9Agent {
         if let Err(_err) = wg_manager.remove_peer_from_request(&peer_rm) {
             // WireGuard manager logs detailed errors; continue processing
         }
-    }
-
-    fn handle_lease_update(&self, update: vpn9_core::control_plane::LeaseUpdate) {
-        warn!(
-            "Ignoring lease update for {} (version {}) - lease management disabled",
-            update.public_key, update.lease_version
-        );
     }
 
     async fn handle_health_check(
@@ -556,8 +545,7 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tonic::transport::Channel;
     use vpn9_core::control_plane::{
-        AgentDisconnect, AgentSubscriptionMessage, HealthCheck, LeaseUpdate,
-        agent_subscription_message::Message,
+        AgentDisconnect, AgentSubscriptionMessage, HealthCheck, agent_subscription_message::Message,
     };
 
     fn sample_os_info() -> OsInfo {
@@ -643,17 +631,6 @@ mod tests {
             SessionAction::Shutdown { reason } => assert_eq!(reason, "maintenance"),
             SessionAction::Reconnect => panic!("expected shutdown"),
         }
-    }
-
-    #[test]
-    fn handle_lease_update_does_not_panic() {
-        let agent = VPN9Agent::new("https://localhost".into());
-        agent.handle_lease_update(LeaseUpdate {
-            agent_id: "abc".into(),
-            public_key: "peer".into(),
-            lease_nonce: vec![],
-            lease_version: 1,
-        });
     }
 
     #[tokio::test]

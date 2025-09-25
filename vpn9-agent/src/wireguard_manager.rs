@@ -302,8 +302,8 @@ impl WireGuardManager {
         self.add_peer(&request.public_key, allowed_ips, None)
             .map(|_| {
                 info!(
-                    "✅ Peer added (agent: {}, public_key: {}, lease_version: {})",
-                    request.agent_id, request.public_key, request.lease_version
+                    "✅ Peer added (agent: {}, public_key: {})",
+                    request.agent_id, request.public_key
                 );
             })
     }

@@ -22,8 +22,6 @@ pub struct Config {
     pub redis_url: String,
     /// Poll interval in seconds for registry refresh
     pub registry_poll_interval_secs: u64,
-    /// Lease TTL for device<->relay assignment tokens
-    pub lease_ttl_secs: u64,
     /// IPv4 pool for assigning relay interface addresses
     pub relay_ipv4_pool: Ipv4Net,
     /// Optional IPv6 pool for relay interface addresses
@@ -62,15 +60,10 @@ impl Config {
             .and_then(|s| s.parse().ok())
             .unwrap_or(10);
 
-        let lease_ttl_secs: u64 = std::env::var("VPN9_LEASE_TTL_SECS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(180);
-
         let relay_ipv4_pool = std::env::var("VPN9_RELAY_IPV4_POOL")
             .ok()
             .and_then(|cidr| Ipv4Net::from_str(&cidr).ok())
-            .unwrap_or_else(|| Ipv4Net::from_str("10.8.0.0/16").expect("static cidr"));
+            .unwrap_or_else(|| Ipv4Net::from_str("10.9.0.0/8").expect("static cidr"));
 
         let relay_ipv6_pool = std::env::var("VPN9_RELAY_IPV6_POOL")
             .ok()
@@ -85,7 +78,6 @@ impl Config {
             // WireGuard settings removed from control plane; managed by agents
             redis_url = %redis_url,
             registry_poll_interval_secs = %registry_poll_interval_secs,
-            lease_ttl_secs = lease_ttl_secs,
             relay_ipv4_pool = %relay_ipv4_pool,
             relay_ipv6_pool = relay_ipv6_pool.as_ref().map(|p| p.to_string()),
             "Configuration loaded from environment"
@@ -99,7 +91,6 @@ impl Config {
             tls_domain,
             redis_url,
             registry_poll_interval_secs,
-            lease_ttl_secs,
             relay_ipv4_pool,
             relay_ipv6_pool,
         })
@@ -131,8 +122,7 @@ impl Default for Config {
             tls_domain: "vpn9-control-plane".to_string(),
             redis_url: "redis://127.0.0.1:6379/1".to_string(),
             registry_poll_interval_secs: 10,
-            lease_ttl_secs: 180,
-            relay_ipv4_pool: Ipv4Net::from_str("10.8.0.0/16").expect("static cidr"),
+            relay_ipv4_pool: Ipv4Net::from_str("10.9.0.0/8").expect("static cidr"),
             relay_ipv6_pool: None,
         }
     }
