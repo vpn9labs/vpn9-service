@@ -237,6 +237,13 @@ export VPN9_SB_PREV_KEYS="<old_key_b64>,<older_key_b64>"
 Ansible deploy reads these variables from your shell environment and injects them into the container.
 ```
 
+## 🌐 IP Allocation Pools
+
+- `VPN9_RELAY_IPV4_POOL` — CIDR used for primary WireGuard interface addresses on relays. Defaults to `10.9.0.0/17` if not set.
+- POP DNS endpoints now use static CGNAT `/32` assignments managed in Ansible (`vpn9_dns_static_ipv4s`). Update `ansible/group_vars/pop_servers.yml` when adding or renumbering resolvers.
+- Agents read the same list via `VPN9_WG_STATIC_IPV4S` (comma-separated CIDRs) so the WireGuard interface keeps those `/32`s after every registration.
+- Agents persist their assigned interfaces (primary + IPv6) to `${VPN9_AGENT_STATE_DIR:-/var/lib/vpn9/state}/interface.json`. The playbooks still read this file when available but will fall back to live interface inspection.
+
 ## 🛡️ Security
 
 - **TLS 1.3**: gRPC secured with server-side TLS (self-signed CA in dev)

@@ -63,7 +63,7 @@ impl Config {
         let relay_ipv4_pool = std::env::var("VPN9_RELAY_IPV4_POOL")
             .ok()
             .and_then(|cidr| Ipv4Net::from_str(&cidr).ok())
-            .unwrap_or_else(|| Ipv4Net::from_str("10.9.0.0/8").expect("static cidr"));
+            .unwrap_or_else(|| Ipv4Net::from_str("10.9.0.0/17").expect("static cidr"));
 
         let relay_ipv6_pool = std::env::var("VPN9_RELAY_IPV6_POOL")
             .ok()
@@ -122,7 +122,7 @@ impl Default for Config {
             tls_domain: "vpn9-control-plane".to_string(),
             redis_url: "redis://127.0.0.1:6379/1".to_string(),
             registry_poll_interval_secs: 10,
-            relay_ipv4_pool: Ipv4Net::from_str("10.9.0.0/8").expect("static cidr"),
+            relay_ipv4_pool: Ipv4Net::from_str("10.9.0.0/17").expect("static cidr"),
             relay_ipv6_pool: None,
         }
     }

@@ -167,12 +167,10 @@ impl AgentManager {
                         expired_agents
                             .iter()
                             .filter_map(|agent| {
-                                if let Some(assignment) = state.assignments.remove(agent) {
+                                state.assignments.remove(agent).map(|assignment| {
                                     state.in_use.remove(&assignment.ipv4);
-                                    Some(agent.clone())
-                                } else {
-                                    None
-                                }
+                                    agent.clone()
+                                })
                             })
                             .collect()
                     };
@@ -252,7 +250,7 @@ impl AgentManager {
         drop(state);
 
         if let Some(store) = self.allocator_store.as_ref() {
-            if let Err(err) = persist_assignment(store, agent_id, assignment.ipv4) {
+            if let Err(err) = persist_assignment(store, agent_id, &assignment) {
                 warn!(
                     agent_id = %agent_id,
                     ipv4 = %assignment.ipv4,
@@ -273,7 +271,7 @@ impl AgentManager {
         );
     }
 
-    fn assignment_from_ipv4(&self, ipv4: Ipv4Addr) -> Option<(InterfaceAssignment, u32)> {
+    fn assignment_from_ipv4(&self, ipv4: Ipv4Addr) -> Option<InterfaceAssignment> {
         let ipv4_u32 = u32::from(ipv4);
         if ipv4_u32 < self.ipv4_first_host {
             return None;
@@ -287,13 +285,10 @@ impl AgentManager {
             let candidate_host = base + u128::from(offset) + 1;
             Ipv6Addr::from(candidate_host)
         });
-        Some((
-            InterfaceAssignment {
-                ipv4,
-                ipv6: ipv6_assignment,
-            },
-            offset,
-        ))
+        Some(InterfaceAssignment {
+            ipv4,
+            ipv6: ipv6_assignment,
+        })
     }
 
     fn try_restore_persisted_assignment(
@@ -313,7 +308,7 @@ impl AgentManager {
                 match persisted {
                     Ok(Some(ip_str)) => match ip_str.parse::<Ipv4Addr>() {
                         Ok(ipv4) => match self.assignment_from_ipv4(ipv4) {
-                            Some((assignment, _)) => {
+                            Some(assignment) => {
                                 if state.in_use.insert(ipv4) {
                                     state.assignments.insert(agent_id.to_string(), assignment);
                                     debug!(
@@ -473,7 +468,6 @@ impl AgentManager {
                 }
             })
             .unwrap_or_default();
-
         info!(
             agent_id = %agent_id,
             interface_ipv4 = %interface_ipv4_with_prefix,
@@ -806,10 +800,15 @@ fn hydrate_ipv4_allocator_state(
 fn persist_assignment(
     store: &redis::Client,
     agent_id: &str,
-    ipv4: Ipv4Addr,
+    assignment: &InterfaceAssignment,
 ) -> Result<(), redis::RedisError> {
     let mut conn = store.get_connection()?;
-    let _: usize = conn.hset(IPV4_ALLOC_HASH_KEY, agent_id, ipv4.to_string())?;
+    let mut pipe = redis::pipe();
+    pipe.cmd("HSET")
+        .arg(IPV4_ALLOC_HASH_KEY)
+        .arg(agent_id)
+        .arg(assignment.ipv4.to_string());
+    pipe.query::<()>(&mut conn)?;
     Ok(())
 }
 
@@ -818,7 +817,10 @@ fn remove_persisted_assignment(
     agent_id: &str,
 ) -> Result<(), redis::RedisError> {
     let mut conn = store.get_connection()?;
-    let _: usize = conn.hdel(IPV4_ALLOC_HASH_KEY, agent_id)?;
+    redis::cmd("HDEL")
+        .arg(IPV4_ALLOC_HASH_KEY)
+        .arg(agent_id)
+        .query::<()>(&mut conn)?;
     Ok(())
 }
 
@@ -845,12 +847,14 @@ fn remove_assignment_from_state_and_store(
     agent_id: &str,
 ) {
     let removed_from_memory = if let Ok(mut state) = ipv4_allocator.lock() {
-        if let Some(assignment) = state.assignments.remove(agent_id) {
-            state.in_use.remove(&assignment.ipv4);
-            true
-        } else {
-            false
-        }
+        state
+            .assignments
+            .remove(agent_id)
+            .map(|assignment| {
+                state.in_use.remove(&assignment.ipv4);
+                true
+            })
+            .unwrap_or(false)
     } else {
         false
     };

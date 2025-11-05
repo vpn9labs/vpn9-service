@@ -1,7 +1,7 @@
 # Multi-stage build for VPN9 Control Plane
 ##########################################
 # Stage 1: Build a static (musl) binary to avoid glibc version issues
-FROM rust:1.89-alpine AS builder
+FROM rust:1.90-alpine AS builder
 
 # Install required system dependencies for musl build
 RUN apk add --no-cache \

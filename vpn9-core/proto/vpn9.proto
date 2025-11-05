@@ -33,6 +33,7 @@ message AgentRegistration {
   uint32 wg_listen_port = 4;
   string wg_interface_ipv4 = 5;
   string wg_interface_ipv6 = 6;
+  reserved 7;
 }
 
 // ------------------------------------------------------------

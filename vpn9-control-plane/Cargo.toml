@@ -9,10 +9,10 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-tokio = { version = "1.47.0", features = ["full"] }
+tokio = { version = "1.48.0", features = ["full"] }
 tokio-stream = "0.1"
 tonic = { version = "0.14.0", features = ["tls-webpki-roots"] }
-rustls = { version = "0.23", features = ["ring"] }
+rustls = { version = "0.23.35", features = ["ring"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tonic-build = "0.14.0"
@@ -21,13 +21,10 @@ vpn9-core = { path = "../vpn9-core" }
 redis = { version = "0.32.5", features = ["tokio-comp", "connection-manager"] }
 
 base64 = "0.22"
-secrecy = "0.8"
 zeroize = "1.7"
 strong-box = "0.5.1"
 x25519-dalek = "2.0.1"
 chrono = { version = "0.4", features = ["clock", "serde", "std"] }
-rand = { version = "0.8", features = ["std", "std_rng"] }
-thiserror = "1.0"
 openssl = { version = "0.10", features = ["vendored"] }
 ring = "0.17"
 ipnet = "2.9"

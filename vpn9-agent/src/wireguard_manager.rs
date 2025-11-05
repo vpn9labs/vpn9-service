@@ -1,14 +1,17 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use crate::firewall::{self, ForwardingState};
+use crate::routing::RouteManager;
 use base64::Engine;
 use defguard_wireguard_rs::{
     InterfaceConfiguration, Kernel, WGApi, WireguardInterfaceApi, host::Peer, key::Key,
     net::IpAddrMask,
 };
+use ipnetwork::IpNetwork;
 use tracing::{debug, error, info, warn};
 use vpn9_core::control_plane::{AgentRegistration, PeerAdd, PeerRemove};
 use zeroize::{Zeroize, Zeroizing};
@@ -24,6 +27,7 @@ pub struct WireGuardConfig {
     pub interface_ipv4: String,
     pub interface_ipv6: Option<String>,
     pub interface_name: String,
+    pub static_ipv4s: Vec<String>,
 }
 
 impl WireGuardConfig {
@@ -34,6 +38,7 @@ impl WireGuardConfig {
         interface_ipv4: String,
         interface_ipv6: Option<String>,
         interface_name: String,
+        static_ipv4s: Vec<String>,
     ) -> Self {
         Self {
             private_key,
@@ -42,6 +47,7 @@ impl WireGuardConfig {
             interface_ipv4,
             interface_ipv6,
             interface_name,
+            static_ipv4s,
         }
     }
 
@@ -62,6 +68,7 @@ impl fmt::Debug for WireGuardConfig {
             .field("interface_ipv4", &self.interface_ipv4)
             .field("interface_ipv6", &self.interface_ipv6)
             .field("interface_name", &self.interface_name)
+            .field("static_ipv4s", &self.static_ipv4s)
             .finish()
     }
 }
@@ -156,6 +163,8 @@ pub struct WireGuardManager {
     wg_api: Arc<Mutex<Option<WGApi<Userspace>>>>,
     interface_configured: Arc<Mutex<bool>>,
     forwarding_state: Arc<Mutex<ForwardingState>>,
+    route_manager: Arc<Mutex<RouteManager>>,
+    peer_routes: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
 
 impl WireGuardManager {
@@ -165,7 +174,22 @@ impl WireGuardManager {
             wg_api: Arc::new(Mutex::new(None)),
             interface_configured: Arc::new(Mutex::new(false)),
             forwarding_state: Arc::new(Mutex::new(ForwardingState::default())),
+            route_manager: Arc::new(Mutex::new(RouteManager::new())),
+            peer_routes: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    fn load_static_ipv4s() -> Vec<String> {
+        std::env::var("VPN9_WG_STATIC_IPV4S")
+            .ok()
+            .map(|raw| {
+                raw.split(',')
+                    .map(|part| part.trim())
+                    .filter(|value| !value.is_empty())
+                    .map(|value| value.to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Configure WireGuard with keys received from control plane
@@ -182,6 +206,8 @@ impl WireGuardManager {
         // Determine interface name based on OS
         let interface_name = self.get_interface_name();
 
+        let static_ipv4s = Self::load_static_ipv4s();
+
         let public_key_for_log = public_key.clone();
         let config = WireGuardConfig::new(
             SensitiveString::new(private_key),
@@ -190,6 +216,7 @@ impl WireGuardManager {
             interface_ipv4.clone(),
             interface_ipv6.clone(),
             interface_name.clone(),
+            static_ipv4s.clone(),
         );
 
         let mut config_guard = ConfigGuard::new(self.config.lock().unwrap());
@@ -219,11 +246,29 @@ impl WireGuardManager {
 
         debug!("WireGuard private key cleared after configuration");
 
+        let assigned_networks = Self::collect_interface_networks(config_ref)?;
+        {
+            let mut route_manager = self.route_manager.lock().unwrap();
+            route_manager.replace_interface(interface_name.clone(), assigned_networks);
+        }
+        {
+            let mut peer_routes = self.peer_routes.lock().unwrap();
+            peer_routes.clear();
+        }
+
         drop(config_guard);
 
         if let Err(err) = self.configure_forwarding(&interface_name) {
             self.cleanup_forwarding();
             self.remove_interface_best_effort();
+            {
+                let mut route_manager = self.route_manager.lock().unwrap();
+                route_manager.reset();
+            }
+            {
+                let mut peer_routes = self.peer_routes.lock().unwrap();
+                peer_routes.clear();
+            }
             {
                 let mut config_guard = self.config.lock().unwrap();
                 *config_guard = None;
@@ -242,6 +287,9 @@ impl WireGuardManager {
         info!("  IPv4: {}", interface_ipv4);
         if let Some(ipv6) = interface_ipv6 {
             info!("  IPv6: {}", ipv6);
+        }
+        if !static_ipv4s.is_empty() {
+            info!("  IPv4 static extras: {:?}", static_ipv4s);
         }
         info!("  Listen Port: {}", listen_port);
         info!("  Public Key: {}", public_key_for_log);
@@ -328,6 +376,28 @@ impl WireGuardManager {
         }
     }
 
+    fn collect_interface_networks(
+        config: &WireGuardConfig,
+    ) -> Result<Vec<IpNetwork>, Box<dyn std::error::Error>> {
+        let mut networks = Vec::new();
+        networks.push(IpNetwork::from_str(&config.interface_ipv4)?);
+
+        if let Some(ref ipv6) = config.interface_ipv6 {
+            if !ipv6.trim().is_empty() {
+                networks.push(IpNetwork::from_str(ipv6)?);
+            }
+        }
+
+        for extra in &config.static_ipv4s {
+            if extra.trim().is_empty() {
+                continue;
+            }
+            networks.push(IpNetwork::from_str(extra)?);
+        }
+
+        Ok(networks)
+    }
+
     fn create_interface(&self) -> Result<(), Box<dyn std::error::Error>> {
         let api_guard = self.wg_api.lock().unwrap();
         if let Some(ref wg_api) = *api_guard {
@@ -385,6 +455,13 @@ impl WireGuardManager {
                     if let Some(ref ipv6) = config.interface_ipv6 {
                         addrs.push(IpAddrMask::from_str(ipv6)?);
                     }
+                    for extra in &config.static_ipv4s {
+                        let trimmed = extra.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        addrs.push(IpAddrMask::from_str(trimmed)?);
+                    }
                     addrs
                 },
                 port: config.listen_port,
@@ -436,23 +513,39 @@ impl WireGuardManager {
             }
             let peer_key: Key = peer_key_bytes.as_slice().try_into()?;
 
-            let mut peer = Peer::new(peer_key);
+            let mut peer = Peer::new(peer_key.clone());
 
             // Add allowed IPs
-            for ip_str in allowed_ips {
-                let addr = IpAddrMask::from_str(&ip_str)?;
+            for ip_str in &allowed_ips {
+                let addr = IpAddrMask::from_str(ip_str)?;
                 peer.allowed_ips.push(addr);
             }
 
             // Set endpoint if provided
-            if let Some(endpoint_str) = endpoint {
+            if let Some(ref endpoint_str) = endpoint {
                 peer.endpoint = Some(endpoint_str.parse()?);
             }
 
             // Add the peer
             wg_api.configure_peer(&peer)?;
+
+            if let Err(err) = self.route_manager.lock().unwrap().add_routes(&allowed_ips) {
+                if let Err(remove_err) = wg_api.remove_peer(&peer_key) {
+                    warn!(
+                        ?remove_err,
+                        peer = peer_public_key,
+                        "Failed to rollback WireGuard peer after routing error"
+                    );
+                }
+                return Err(err.into());
+            }
         } else {
             return Err("WireGuard API not initialized".into());
+        }
+
+        {
+            let mut peer_routes = self.peer_routes.lock().unwrap();
+            peer_routes.insert(peer_public_key.to_string(), allowed_ips);
         }
         Ok(())
     }
@@ -462,6 +555,11 @@ impl WireGuardManager {
         if !self.is_configured() {
             return Err("WireGuard interface not configured".into());
         }
+
+        let routes = {
+            let peer_routes = self.peer_routes.lock().unwrap();
+            peer_routes.get(peer_public_key).cloned()
+        };
 
         let api_guard = self.wg_api.lock().unwrap();
         if let Some(ref wg_api) = *api_guard {
@@ -477,6 +575,13 @@ impl WireGuardManager {
             wg_api.remove_peer(&peer_key)?;
         } else {
             return Err("WireGuard API not initialized".into());
+        }
+
+        if let Some(routes) = routes {
+            self.route_manager.lock().unwrap().remove_routes(&routes)?;
+
+            let mut peer_routes = self.peer_routes.lock().unwrap();
+            peer_routes.remove(peer_public_key);
         }
         Ok(())
     }
@@ -510,6 +615,16 @@ impl WireGuardManager {
         }
 
         self.cleanup_forwarding();
+
+        {
+            let mut route_manager = self.route_manager.lock().unwrap();
+            route_manager.reset();
+        }
+
+        {
+            let mut peer_routes = self.peer_routes.lock().unwrap();
+            peer_routes.clear();
+        }
 
         // Reset state
         {
@@ -587,6 +702,16 @@ impl WireGuardManager {
         {
             let mut configured = self.interface_configured.lock().unwrap();
             *configured = false;
+        }
+
+        {
+            let mut route_manager = self.route_manager.lock().unwrap();
+            route_manager.reset();
+        }
+
+        {
+            let mut peer_routes = self.peer_routes.lock().unwrap();
+            peer_routes.clear();
         }
     }
 }
