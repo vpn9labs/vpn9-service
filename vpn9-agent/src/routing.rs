@@ -55,7 +55,7 @@ impl RouteManager {
                 continue;
             }
 
-            let counter = self.routes.entry(network.clone()).or_insert(0);
+            let counter = self.routes.entry(network).or_insert(0);
             if *counter == 0 {
                 Self::install_route(&iface, &network)?;
                 debug!(interface = %iface, route = %network, "Installed route for WireGuard peer");

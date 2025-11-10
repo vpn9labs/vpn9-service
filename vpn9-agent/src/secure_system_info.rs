@@ -125,14 +125,12 @@ async fn get_public_ip() -> Option<IpAddr> {
     for endpoint in endpoints {
         if let Ok(Ok(response)) =
             tokio::time::timeout(std::time::Duration::from_secs(5), reqwest::get(endpoint)).await
-        {
-            if let Ok(ip_str) = response.text().await {
+            && let Ok(ip_str) = response.text().await {
                 let trimmed = ip_str.trim();
                 if let Ok(ip) = IpAddr::from_str(trimmed) {
                     return Some(ip);
                 }
             }
-        }
     }
 
     error!("Failed to get public IP from all endpoints");

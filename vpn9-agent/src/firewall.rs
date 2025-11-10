@@ -408,11 +408,10 @@ fn resolve_nft_path() -> Result<String, FirewallError> {
     use std::env;
     use std::path::Path;
 
-    if let Ok(custom) = env::var("VPN9_NFT_BIN") {
-        if Path::new(&custom).is_file() {
+    if let Ok(custom) = env::var("VPN9_NFT_BIN")
+        && Path::new(&custom).is_file() {
             return Ok(custom);
         }
-    }
 
     if let Some(path_os) = env::var_os("PATH") {
         for dir in env::split_paths(&path_os) {

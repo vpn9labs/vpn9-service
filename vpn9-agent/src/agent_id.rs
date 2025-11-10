@@ -23,11 +23,10 @@ impl AgentId {
         machine_id: Option<String>,
         hostname: Option<String>,
     ) -> Self {
-        if let Some(candidate) = agent_id_override {
-            if let Ok(id) = Uuid::parse_str(candidate.trim()) {
+        if let Some(candidate) = agent_id_override
+            && let Ok(id) = Uuid::parse_str(candidate.trim()) {
                 return Self(id);
             }
-        }
 
         if let Some(machine_id) = machine_id {
             let name = format!("vpn9-agent:{}", machine_id.trim());

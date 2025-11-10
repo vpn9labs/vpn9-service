@@ -44,23 +44,20 @@ impl AgentConfig {
             config.agent_version = version;
         }
 
-        if let Ok(interval) = std::env::var("VPN9_HEARTBEAT_INTERVAL") {
-            if let Ok(secs) = interval.parse::<u64>() {
+        if let Ok(interval) = std::env::var("VPN9_HEARTBEAT_INTERVAL")
+            && let Ok(secs) = interval.parse::<u64>() {
                 config.heartbeat_interval_secs = secs;
             }
-        }
 
-        if let Ok(attempts) = std::env::var("VPN9_MAX_RETRY_ATTEMPTS") {
-            if let Ok(num) = attempts.parse::<u32>() {
+        if let Ok(attempts) = std::env::var("VPN9_MAX_RETRY_ATTEMPTS")
+            && let Ok(num) = attempts.parse::<u32>() {
                 config.max_retry_attempts = num;
             }
-        }
 
-        if let Ok(delay) = std::env::var("VPN9_RETRY_DELAY") {
-            if let Ok(secs) = delay.parse::<u64>() {
+        if let Ok(delay) = std::env::var("VPN9_RETRY_DELAY")
+            && let Ok(secs) = delay.parse::<u64>() {
                 config.retry_delay_secs = secs;
             }
-        }
 
         config
     }

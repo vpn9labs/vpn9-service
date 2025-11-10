@@ -382,11 +382,10 @@ impl WireGuardManager {
         let mut networks = Vec::new();
         networks.push(IpNetwork::from_str(&config.interface_ipv4)?);
 
-        if let Some(ref ipv6) = config.interface_ipv6 {
-            if !ipv6.trim().is_empty() {
+        if let Some(ref ipv6) = config.interface_ipv6
+            && !ipv6.trim().is_empty() {
                 networks.push(IpNetwork::from_str(ipv6)?);
             }
-        }
 
         for extra in &config.static_ipv4s {
             if extra.trim().is_empty() {

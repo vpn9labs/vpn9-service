@@ -175,17 +175,15 @@ impl AgentManager {
                             .collect()
                     };
 
-                    if let Some(store) = allocator_store.as_ref() {
-                        if !removed_agents.is_empty() {
-                            if let Err(err) = remove_persisted_assignments(store, &removed_agents) {
+                    if let Some(store) = allocator_store.as_ref()
+                        && !removed_agents.is_empty()
+                            && let Err(err) = remove_persisted_assignments(store, &removed_agents) {
                                 warn!(
                                     error = %err,
                                     removed_agents = ?removed_agents,
                                     "Failed to remove persisted relay IPv4 assignments for expired agents"
                                 );
                             }
-                        }
-                    }
                     info!(
                         expired_count = expired_agents.len(),
                         expired_agents = ?expired_agents,
@@ -249,8 +247,8 @@ impl AgentManager {
 
         drop(state);
 
-        if let Some(store) = self.allocator_store.as_ref() {
-            if let Err(err) = persist_assignment(store, agent_id, &assignment) {
+        if let Some(store) = self.allocator_store.as_ref()
+            && let Err(err) = persist_assignment(store, agent_id, &assignment) {
                 warn!(
                     agent_id = %agent_id,
                     ipv4 = %assignment.ipv4,
@@ -258,7 +256,6 @@ impl AgentManager {
                     "Failed to persist relay IPv4 assignment"
                 );
             }
-        }
 
         Ok(assignment)
     }
